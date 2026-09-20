@@ -32,13 +32,19 @@ public class SyncStore {
         int safeLimit = Math.max(1, Math.min(limit, 500));
         List<SyncItem> items = new ArrayList<>();
         Cursor dirty = helper.getReadableDatabase().rawQuery(
-                "SELECT entity_type,local_id,changed_at FROM sync_dirty ORDER BY CASE entity_type WHEN 'patient' THEN 0 ELSE 1 END, changed_at ASC LIMIT " + safeLimit,
+                "SELECT entity_type,local_id,changed_at FROM sync_dirty ORDER BY " +
+                        "CASE entity_type WHEN 'patient' THEN 0 WHEN 'visit' THEN 1 WHEN 'payment' THEN 2 ELSE 3 END, changed_at ASC LIMIT " + safeLimit,
                 null);
         while (dirty.moveToNext()) {
             String type = dirty.getString(0);
             long localId = dirty.getLong(1);
             String changedAt = dirty.getString(2);
-            SyncItem item = "patient".equals(type) ? patientItem(localId, changedAt) : visitItem(localId, changedAt);
+            SyncItem item;
+            if ("patient".equals(type)) item = patientItem(localId, changedAt);
+            else if ("visit".equals(type)) item = visitItem(localId, changedAt);
+            else if ("payment".equals(type)) item = paymentItem(localId, changedAt);
+            else if ("day_closure".equals(type)) item = closureItem(localId, changedAt);
+            else item = null;
             if (item != null) items.add(item);
         }
         dirty.close();
@@ -90,6 +96,48 @@ public class SyncStore {
             json.put("started_at", safe(c.getString(12)));
             json.put("completed_at", safe(c.getString(13)));
             SyncItem item = new SyncItem("visit", id, c.getString(14), changedAt, json.toString());
+            c.close();
+            return item;
+        } catch (JSONException e) { c.close(); return null; }
+    }
+
+    private SyncItem paymentItem(long id, String changedAt) {
+        Cursor c = helper.getReadableDatabase().rawQuery(
+                "SELECT p.amount,p.method,p.created_at,pk.sync_key,vk.sync_key FROM payments p " +
+                        "JOIN sync_entity_keys pk ON pk.entity_type='payment' AND pk.local_id=p.id " +
+                        "JOIN sync_entity_keys vk ON vk.entity_type='visit' AND vk.local_id=p.visit_id WHERE p.id=?",
+                new String[]{String.valueOf(id)});
+        if (!c.moveToFirst()) { c.close(); return null; }
+        try {
+            JSONObject json = new JSONObject();
+            json.put("sync_key", c.getString(3));
+            json.put("visit_sync_key", c.getString(4));
+            json.put("amount", c.getInt(0));
+            json.put("method", safe(c.getString(1)));
+            json.put("created_at", safe(c.getString(2)));
+            SyncItem item = new SyncItem("payment", id, c.getString(3), changedAt, json.toString());
+            c.close();
+            return item;
+        } catch (JSONException e) { c.close(); return null; }
+    }
+
+    private SyncItem closureItem(long id, String changedAt) {
+        Cursor c = helper.getReadableDatabase().rawQuery(
+                "SELECT d.day,d.total_visits,d.total_charges,d.total_paid,d.total_waived,d.outstanding,d.closed_at,k.sync_key " +
+                        "FROM day_closures d JOIN sync_entity_keys k ON k.entity_type='day_closure' AND k.local_id=d.id WHERE d.id=?",
+                new String[]{String.valueOf(id)});
+        if (!c.moveToFirst()) { c.close(); return null; }
+        try {
+            JSONObject json = new JSONObject();
+            json.put("sync_key", c.getString(7));
+            json.put("day", safe(c.getString(0)));
+            json.put("total_visits", c.getInt(1));
+            json.put("total_charges", c.getInt(2));
+            json.put("total_paid", c.getInt(3));
+            json.put("total_waived", c.getInt(4));
+            json.put("outstanding", c.getInt(5));
+            json.put("closed_at", safe(c.getString(6)));
+            SyncItem item = new SyncItem("day_closure", id, c.getString(7), changedAt, json.toString());
             c.close();
             return item;
         } catch (JSONException e) { c.close(); return null; }
@@ -196,6 +244,72 @@ public class SyncStore {
             if (id > 0) bindRemoteKey("visit", id, syncKey);
         } catch (Exception ignored) {
         } finally { suppress(false); }
+    }
+
+    public void applyRemotePayment(JSONObject row) {
+        try {
+            String syncKey = row.getString("sync_key");
+            Long localId = localIdForKey("payment", syncKey);
+            if (localId != null && isDirty("payment", localId)) return;
+            JSONObject visit = row.optJSONObject("visit");
+            if (visit == null) return;
+            Long visitLocalId = localIdForKey("visit", visit.optString("sync_key", ""));
+            if (visitLocalId == null) return;
+            suppress(true);
+            ContentValues v = new ContentValues();
+            v.put("visit_id", visitLocalId);
+            v.put("amount", row.optInt("amount", 0));
+            v.put("method", row.optString("method", ""));
+            v.put("created_at", normalizeTime(row.optString("created_at", "")));
+            SQLiteDatabase db = helper.getWritableDatabase();
+            long id;
+            if (localId == null) id = db.insert("payments", null, v);
+            else { db.update("payments", v, "id=?", new String[]{String.valueOf(localId)}); id = localId; }
+            if (id > 0) bindRemoteKey("payment", id, syncKey);
+            recomputePaidAmount(db, visitLocalId);
+        } catch (Exception ignored) {
+        } finally { suppress(false); }
+    }
+
+    public void applyRemoteDayClosure(JSONObject row) {
+        try {
+            String syncKey = row.getString("sync_key");
+            Long localId = localIdForKey("day_closure", syncKey);
+            String day = row.optString("day", "");
+            if (localId == null && !day.isEmpty()) localId = closureIdForDay(day);
+            if (localId != null && isDirty("day_closure", localId)) return;
+            suppress(true);
+            ContentValues v = new ContentValues();
+            v.put("day", day);
+            v.put("total_visits", row.optInt("total_visits", 0));
+            v.put("total_charges", row.optInt("total_charges", 0));
+            v.put("total_paid", row.optInt("total_paid", 0));
+            v.put("total_waived", row.optInt("total_waived", 0));
+            v.put("outstanding", row.optInt("outstanding", 0));
+            v.put("closed_at", normalizeTime(row.optString("closed_at", "")));
+            SQLiteDatabase db = helper.getWritableDatabase();
+            long id;
+            if (localId == null) id = db.insert("day_closures", null, v);
+            else { db.update("day_closures", v, "id=?", new String[]{String.valueOf(localId)}); id = localId; }
+            if (id > 0) bindRemoteKey("day_closure", id, syncKey);
+        } catch (Exception ignored) {
+        } finally { suppress(false); }
+    }
+
+    private Long closureIdForDay(String day) {
+        Cursor c = helper.getReadableDatabase().rawQuery("SELECT id FROM day_closures WHERE day=? LIMIT 1", new String[]{day});
+        Long id = c.moveToFirst() ? c.getLong(0) : null;
+        c.close();
+        return id;
+    }
+
+    private void recomputePaidAmount(SQLiteDatabase db, long visitId) {
+        Cursor c = db.rawQuery("SELECT COALESCE(SUM(amount),0) FROM payments WHERE visit_id=?", new String[]{String.valueOf(visitId)});
+        int paid = c.moveToFirst() ? c.getInt(0) : 0;
+        c.close();
+        ContentValues v = new ContentValues();
+        v.put("paid_amount", paid);
+        db.update("visits", v, "id=?", new String[]{String.valueOf(visitId)});
     }
 
     private void suppress(boolean value) { putMeta("suppress_tracking", value ? "1" : "0"); }

@@ -128,8 +128,37 @@ public final class SupabaseApi {
         return r.code >= 200 && r.code < 300;
     }
 
+    public boolean upsertPayment(String clinicId, String deviceId, JSONObject local) throws Exception {
+        String visitSyncKey = local.optString("visit_sync_key", "");
+        String visitId = remoteVisitId(clinicId, visitSyncKey);
+        if (visitId.isEmpty()) return false;
+        JSONObject body = new JSONObject(local.toString());
+        body.remove("visit_sync_key");
+        body.put("clinic_id", clinicId);
+        body.put("visit_id", visitId);
+        body.put("source_device_id", deviceId);
+        Response r = request("POST", "/rest/v1/payments?on_conflict=clinic_id,sync_key", body.toString(), "resolution=merge-duplicates,return=minimal");
+        return r.code >= 200 && r.code < 300;
+    }
+
+    public boolean upsertDayClosure(String clinicId, String deviceId, JSONObject local) throws Exception {
+        JSONObject body = new JSONObject(local.toString());
+        body.put("clinic_id", clinicId);
+        body.put("source_device_id", deviceId);
+        Response r = request("POST", "/rest/v1/day_closures?on_conflict=clinic_id,day", body.toString(), "resolution=merge-duplicates,return=minimal");
+        return r.code >= 200 && r.code < 300;
+    }
+
     private String remotePatientId(String clinicId, String syncKey) throws Exception {
-        String path = "/rest/v1/patients?select=id&clinic_id=eq." + enc(clinicId) + "&sync_key=eq." + enc(syncKey) + "&limit=1";
+        return remoteId("patients", clinicId, syncKey);
+    }
+
+    private String remoteVisitId(String clinicId, String syncKey) throws Exception {
+        return remoteId("visits", clinicId, syncKey);
+    }
+
+    private String remoteId(String table, String clinicId, String syncKey) throws Exception {
+        String path = "/rest/v1/" + table + "?select=id&clinic_id=eq." + enc(clinicId) + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         Response r = request("GET", path, null, null);
         if (r.code < 200 || r.code >= 300) return "";
         JSONArray arr = new JSONArray(r.body);
@@ -138,21 +167,39 @@ public final class SupabaseApi {
 
     public JSONArray pullPatients(String clinicId, String cursor) throws Exception {
         String path = "/rest/v1/patients?select=sync_key,card_no,full_name,phone,gender,created_at,updated_at&clinic_id=eq." + enc(clinicId)
-                + (cursor == null || cursor.isEmpty() ? "" : "&updated_at=gt." + enc(cursor))
-                + "&order=updated_at.asc&limit=1000";
-        Response r = request("GET", path, null, null);
-        if (r.code < 200 || r.code >= 300) throw new IOException(errorMessage(r));
-        return new JSONArray(r.body);
+                + cursorFilter(cursor) + "&order=updated_at.asc&limit=1000";
+        return getArray(path);
     }
 
     public JSONArray pullVisits(String clinicId, String cursor) throws Exception {
         String select = "sync_key,visit_type,status,fee,paid_amount,complaint,exam,diagnosis,labs,treatment,followup,created_at,started_at,completed_at,updated_at,patient:patients(sync_key)";
         String path = "/rest/v1/visits?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
-                + (cursor == null || cursor.isEmpty() ? "" : "&updated_at=gt." + enc(cursor))
-                + "&order=updated_at.asc&limit=1000";
+                + cursorFilter(cursor) + "&order=updated_at.asc&limit=1000";
+        return getArray(path);
+    }
+
+    public JSONArray pullPayments(String clinicId, String cursor) throws Exception {
+        String select = "sync_key,amount,method,created_at,updated_at,visit:visits(sync_key)";
+        String path = "/rest/v1/payments?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
+                + cursorFilter(cursor) + "&order=updated_at.asc&limit=1000";
+        return getArray(path);
+    }
+
+    public JSONArray pullDayClosures(String clinicId, String cursor) throws Exception {
+        String select = "sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at";
+        String path = "/rest/v1/day_closures?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
+                + cursorFilter(cursor) + "&order=updated_at.asc&limit=1000";
+        return getArray(path);
+    }
+
+    private JSONArray getArray(String path) throws Exception {
         Response r = request("GET", path, null, null);
         if (r.code < 200 || r.code >= 300) throw new IOException(errorMessage(r));
         return new JSONArray(r.body);
+    }
+
+    private static String cursorFilter(String cursor) {
+        return cursor == null || cursor.isEmpty() ? "" : "&updated_at=gt." + enc(cursor);
     }
 
     private Response request(String method, String path, String body, String prefer) throws Exception {
