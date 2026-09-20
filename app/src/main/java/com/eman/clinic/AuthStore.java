@@ -3,7 +3,7 @@ package com.eman.clinic;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-/** Stores the Clinic Supabase session and selected clinic for this device. */
+/** Stores the Clinic session, selected clinic and cached subscription state. */
 public final class AuthStore {
     private static final String PREF = "clinic_remote_auth";
     private final SharedPreferences prefs;
@@ -21,9 +21,21 @@ public final class AuthStore {
     }
 
     public void saveClinic(String clinicId, String clinicName) {
+        prefs.edit().putString("clinic_id", safe(clinicId)).putString("clinic_name", safe(clinicName)).apply();
+    }
+
+    public void saveEntitlement(String plan, String status, boolean allowed, String reason,
+                                String trialEndsAt, String paidUntil, String serverTime) {
         prefs.edit()
-                .putString("clinic_id", clinicId == null ? "" : clinicId)
-                .putString("clinic_name", clinicName == null ? "" : clinicName)
+                .putBoolean("entitlement_known", true)
+                .putBoolean("entitlement_allowed", allowed)
+                .putString("subscription_plan", safe(plan))
+                .putString("subscription_status", safe(status))
+                .putString("subscription_reason", safe(reason))
+                .putString("trial_ends_at", safe(trialEndsAt))
+                .putString("paid_until", safe(paidUntil))
+                .putString("entitlement_server_time", safe(serverTime))
+                .putLong("entitlement_checked_local_ms", System.currentTimeMillis())
                 .apply();
     }
 
@@ -32,9 +44,18 @@ public final class AuthStore {
     public String userId() { return prefs.getString("user_id", ""); }
     public String clinicId() { return prefs.getString("clinic_id", ""); }
     public String clinicName() { return prefs.getString("clinic_name", ""); }
+    public String subscriptionPlan() { return prefs.getString("subscription_plan", "trial"); }
+    public String subscriptionStatus() { return prefs.getString("subscription_status", ""); }
+    public String subscriptionReason() { return prefs.getString("subscription_reason", ""); }
+    public String trialEndsAt() { return prefs.getString("trial_ends_at", ""); }
+    public String paidUntil() { return prefs.getString("paid_until", ""); }
 
     public boolean hasRemoteIdentity() {
         return !refreshToken().isEmpty() && !userId().isEmpty() && !clinicId().isEmpty();
+    }
+
+    public boolean isSubscriptionBlocked() {
+        return prefs.getBoolean("entitlement_known", false) && !prefs.getBoolean("entitlement_allowed", true);
     }
 
     public void setPendingClinicName(String name) {
@@ -45,6 +66,8 @@ public final class AuthStore {
     public void clearPendingClinicName() { prefs.edit().remove("pending_clinic_name").apply(); }
 
     public void clearRemoteSession() {
-        prefs.edit().remove("access_token").remove("refresh_token").remove("user_id").remove("clinic_id").remove("clinic_name").apply();
+        prefs.edit().clear().apply();
     }
+
+    private static String safe(String value) { return value == null ? "" : value; }
 }

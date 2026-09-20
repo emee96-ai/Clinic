@@ -8,7 +8,10 @@ public class LauncherActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         AuthStore auth = new AuthStore(this);
-        Class<?> target = auth.hasRemoteIdentity() ? MainActivity.class : LoginActivity.class;
+        Class<?> target;
+        if (!auth.hasRemoteIdentity()) target = LoginActivity.class;
+        else if (auth.isSubscriptionBlocked()) target = SubscriptionActivity.class;
+        else target = MainActivity.class;
         startActivity(new Intent(this, target));
         finish();
     }
