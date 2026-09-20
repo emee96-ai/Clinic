@@ -7,8 +7,10 @@
         android:label="العيادة"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="false" />
+        <activity android:name=".LoginActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity
-            android:name=".MainActivity"
+            android:name=".LauncherActivity"
             android:screenOrientation="portrait"
             android:exported="true">
             <intent-filter>
