@@ -34,6 +34,7 @@ public final class SyncCoordinator {
             AuthStore auth = new AuthStore(c);
             if (!auth.hasRemoteIdentity()) return;
             new RemoteSync(c).syncOnce();
+            if (auth.isSubscriptionBlocked()) ClinicApp.showSubscriptionBlocked();
         } catch (Exception ignored) {
             // Network failure must never interrupt clinic work.
         } finally {
