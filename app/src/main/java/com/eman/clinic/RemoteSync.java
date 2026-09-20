@@ -21,6 +21,7 @@ public final class RemoteSync {
 
     public boolean syncOnce() throws Exception {
         if (!auth.hasRemoteIdentity()) return false;
+        if (!api.refreshEntitlement()) return false;
         String clinicId = auth.clinicId();
         String deviceId = store.deviceId();
 
@@ -28,17 +29,11 @@ public final class RemoteSync {
         for (SyncStore.SyncItem item : pending) {
             JSONObject payload = new JSONObject(item.payload);
             boolean ok;
-            if ("patient".equals(item.entityType)) {
-                ok = api.upsertPatient(clinicId, deviceId, payload);
-            } else if ("visit".equals(item.entityType)) {
-                ok = api.upsertVisit(clinicId, deviceId, payload);
-            } else if ("payment".equals(item.entityType)) {
-                ok = api.upsertPayment(clinicId, deviceId, payload);
-            } else if ("day_closure".equals(item.entityType)) {
-                ok = api.upsertDayClosure(clinicId, deviceId, payload);
-            } else {
-                ok = false;
-            }
+            if ("patient".equals(item.entityType)) ok = api.upsertPatient(clinicId, deviceId, payload);
+            else if ("visit".equals(item.entityType)) ok = api.upsertVisit(clinicId, deviceId, payload);
+            else if ("payment".equals(item.entityType)) ok = api.upsertPayment(clinicId, deviceId, payload);
+            else if ("day_closure".equals(item.entityType)) ok = api.upsertDayClosure(clinicId, deviceId, payload);
+            else ok = false;
             if (ok) store.markSynced(item);
         }
 

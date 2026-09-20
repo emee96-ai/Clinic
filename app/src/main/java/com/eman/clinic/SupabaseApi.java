@@ -35,7 +35,6 @@ public final class SupabaseApi {
         return true;
     }
 
-    /** Returns true when signup immediately produced a session; false means email confirmation is required. */
     public boolean signUp(String email, String password) throws Exception {
         JSONObject body = new JSONObject();
         body.put("email", email.trim());
@@ -75,6 +74,7 @@ public final class SupabaseApi {
             if (arr.length() > 0) {
                 JSONObject c = arr.getJSONObject(0);
                 auth.saveClinic(c.getString("id"), c.optString("name", "العيادة"));
+                refreshEntitlementQuietly();
                 return true;
             }
         } else if (get.code != 401) {
@@ -104,7 +104,34 @@ public final class SupabaseApi {
         if (membership.code < 200 || membership.code >= 300) throw new IOException(errorMessage(membership));
         auth.saveClinic(clinicId, clinic.optString("name", clinicName));
         auth.clearPendingClinicName();
+        refreshEntitlementQuietly();
         return true;
+    }
+
+    public boolean refreshEntitlement() throws Exception {
+        if (auth.clinicId().isEmpty()) return true;
+        JSONObject body = new JSONObject();
+        body.put("p_clinic_id", auth.clinicId());
+        Response r = request("POST", "/rest/v1/rpc/current_clinic_entitlement", body.toString(), null);
+        if (r.code < 200 || r.code >= 300) throw new IOException(errorMessage(r));
+        JSONArray rows = new JSONArray(r.body);
+        if (rows.length() == 0) return true;
+        JSONObject e = rows.getJSONObject(0);
+        boolean allowed = e.optBoolean("allowed", true);
+        auth.saveEntitlement(
+                e.optString("plan", "trial"),
+                e.optString("subscription_status", ""),
+                allowed,
+                e.optString("reason", ""),
+                e.optString("trial_ends_at", ""),
+                e.optString("paid_until", ""),
+                e.optString("server_time", "")
+        );
+        return allowed;
+    }
+
+    private void refreshEntitlementQuietly() {
+        try { refreshEntitlement(); } catch (Exception ignored) {}
     }
 
     public boolean upsertPatient(String clinicId, String deviceId, JSONObject local) throws Exception {
@@ -117,7 +144,7 @@ public final class SupabaseApi {
 
     public boolean upsertVisit(String clinicId, String deviceId, JSONObject local) throws Exception {
         String patientSyncKey = local.optString("patient_sync_key", "");
-        String patientId = remotePatientId(clinicId, patientSyncKey);
+        String patientId = remoteId("patients", clinicId, patientSyncKey);
         if (patientId.isEmpty()) return false;
         JSONObject body = new JSONObject(local.toString());
         body.remove("patient_sync_key");
@@ -129,8 +156,7 @@ public final class SupabaseApi {
     }
 
     public boolean upsertPayment(String clinicId, String deviceId, JSONObject local) throws Exception {
-        String visitSyncKey = local.optString("visit_sync_key", "");
-        String visitId = remoteVisitId(clinicId, visitSyncKey);
+        String visitId = remoteId("visits", clinicId, local.optString("visit_sync_key", ""));
         if (visitId.isEmpty()) return false;
         JSONObject body = new JSONObject(local.toString());
         body.remove("visit_sync_key");
@@ -147,14 +173,6 @@ public final class SupabaseApi {
         body.put("source_device_id", deviceId);
         Response r = request("POST", "/rest/v1/day_closures?on_conflict=clinic_id,day", body.toString(), "resolution=merge-duplicates,return=minimal");
         return r.code >= 200 && r.code < 300;
-    }
-
-    private String remotePatientId(String clinicId, String syncKey) throws Exception {
-        return remoteId("patients", clinicId, syncKey);
-    }
-
-    private String remoteVisitId(String clinicId, String syncKey) throws Exception {
-        return remoteId("visits", clinicId, syncKey);
     }
 
     private String remoteId(String table, String clinicId, String syncKey) throws Exception {
@@ -204,9 +222,7 @@ public final class SupabaseApi {
 
     private Response request(String method, String path, String body, String prefer) throws Exception {
         Response r = raw(method, path, body, true, prefer, false);
-        if (r.code == 401 && refreshSession()) {
-            r = raw(method, path, body, true, prefer, false);
-        }
+        if (r.code == 401 && refreshSession()) r = raw(method, path, body, true, prefer, false);
         return r;
     }
 
@@ -256,9 +272,7 @@ public final class SupabaseApi {
             if (m.isEmpty()) m = j.optString("message", "");
             if (m.isEmpty()) m = j.optString("error_description", "");
             return m.isEmpty() ? "HTTP " + r.code : m;
-        } catch (Exception e) {
-            return "HTTP " + r.code;
-        }
+        } catch (Exception e) { return "HTTP " + r.code; }
     }
 
     private static String enc(String value) {
