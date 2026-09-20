@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0e7169" />
+  <title>إدارة منصة العيادة</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section id="loginView" class="auth-card">
+      <div class="brand">العيادة</div>
+      <h1>لوحة إدارة المنصة</h1>
+      <p>دخول مالكة النظام لإدارة العيادات والاشتراكات والدفعات.</p>
+      <label>البريد الإلكتروني<input id="email" type="email" autocomplete="email" /></label>
+      <label>كلمة المرور<input id="password" type="password" autocomplete="current-password" /></label>
+      <button id="loginBtn" class="primary">دخول</button>
+      <button id="signupBtn" class="secondary">إنشاء حساب الإدارة لأول مرة</button>
+      <div id="authMessage" class="message"></div>
+    </section>
+
+    <section id="noAccessView" class="auth-card hidden">
+      <h1>الحساب غير مخوّل</h1>
+      <p>تم تسجيل الدخول، لكن الحساب لم يُضف بعد كـ Platform Admin.</p>
+      <button id="noAccessLogout" class="secondary">تسجيل الخروج</button>
+    </section>
+
+    <section id="dashboard" class="hidden">
+      <header class="topbar">
+        <div><div class="brand">العيادة</div><h1>إدارة المنصة</h1></div>
+        <div class="top-actions"><button id="refreshBtn" class="secondary small">تحديث</button><button id="logoutBtn" class="ghost small">خروج</button></div>
+      </header>
+
+      <div id="globalMessage" class="message"></div>
+
+      <section class="stats" id="stats"></section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h2>العيادات</h2><p>الحالة والباقات وتواريخ الاشتراك.</p></div><div class="filters"><input id="clinicSearch" placeholder="بحث باسم العيادة" /><select id="clinicStatus"><option value="">كل الحالات</option><option value="trialing">تجربة</option><option value="active">نشط</option><option value="past_due">متأخر</option><option value="suspended">موقوف</option><option value="cancelled">ملغي</option></select></div></div>
+        <div class="table-wrap"><table><thead><tr><th>العيادة</th><th>الباقة</th><th>الحالة</th><th>التجربة</th><th>مدفوع حتى</th><th>إجراءات</th></tr></thead><tbody id="clinicsBody"></tbody></table></div>
+      </section>
+
+      <section class="grid-2">
+        <section class="panel">
+          <div class="panel-head"><div><h2>طلبات دفع معلقة</h2><p>تأكيد أو رفض التحويلات المرسلة.</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>العيادة</th><th>المبلغ</th><th>الطلب</th><th>المرجع</th><th>إجراء</th></tr></thead><tbody id="paymentsBody"></tbody></table></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div><h2>تسجيل دفعة يدويًا</h2><p>لتحويلات بنكك/فوري/المحافظ أو الدفع المباشر.</p></div></div>
+          <form id="manualPaymentForm" class="form-grid">
+            <label class="full">العيادة<select id="manualClinic" required></select></label>
+            <label>المبلغ<input id="manualAmount" type="number" min="1" required /></label>
+            <label>العملة<input id="manualCurrency" value="SDG" required /></label>
+            <label>وسيلة الدفع<select id="manualMethod"><option>بنكك</option><option>فوري</option><option>O-Cash</option><option>كاش</option><option>أخرى</option></select></label>
+            <label>المرجع<input id="manualReference" /></label>
+            <label>الباقة<select id="manualPlan"><option value="basic">Basic</option><option value="plus">Plus</option><option value="annual">Annual</option></select></label>
+            <label>المدة بالأيام<input id="manualDays" type="number" min="1" max="730" value="30" required /></label>
+            <label class="full">ملاحظات<textarea id="manualNotes" rows="2"></textarea></label>
+            <button class="primary full" type="submit">تسجيل الدفعة وتفعيل الاشتراك</button>
+          </form>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h2>سجل الاشتراكات</h2><p>آخر عمليات التفعيل والتعليق والرفض.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>الوقت</th><th>العيادة</th><th>الحدث</th><th>من → إلى</th><th>ملاحظة</th></tr></thead><tbody id="eventsBody"></tbody></table></div>
+      </section>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
