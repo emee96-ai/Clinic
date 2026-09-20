@@ -24,7 +24,7 @@ public final class RemoteSync {
         String clinicId = auth.clinicId();
         String deviceId = store.deviceId();
 
-        List<SyncStore.SyncItem> pending = store.pending(200);
+        List<SyncStore.SyncItem> pending = store.pending(300);
         for (SyncStore.SyncItem item : pending) {
             JSONObject payload = new JSONObject(item.payload);
             boolean ok;
@@ -32,6 +32,10 @@ public final class RemoteSync {
                 ok = api.upsertPatient(clinicId, deviceId, payload);
             } else if ("visit".equals(item.entityType)) {
                 ok = api.upsertVisit(clinicId, deviceId, payload);
+            } else if ("payment".equals(item.entityType)) {
+                ok = api.upsertPayment(clinicId, deviceId, payload);
+            } else if ("day_closure".equals(item.entityType)) {
+                ok = api.upsertDayClosure(clinicId, deviceId, payload);
             } else {
                 ok = false;
             }
@@ -40,6 +44,8 @@ public final class RemoteSync {
 
         pullPatients(clinicId);
         pullVisits(clinicId);
+        pullPayments(clinicId);
+        pullDayClosures(clinicId);
         return true;
     }
 
@@ -50,8 +56,7 @@ public final class RemoteSync {
         for (int i = 0; i < rows.length(); i++) {
             JSONObject row = rows.getJSONObject(i);
             store.applyRemotePatient(row);
-            String updated = row.optString("updated_at", "");
-            if (!updated.isEmpty() && (max == null || max.isEmpty() || updated.compareTo(max) > 0)) max = updated;
+            max = newer(max, row.optString("updated_at", ""));
         }
         if (max != null && !max.isEmpty()) store.putMeta("patients_cursor", max);
     }
@@ -63,9 +68,38 @@ public final class RemoteSync {
         for (int i = 0; i < rows.length(); i++) {
             JSONObject row = rows.getJSONObject(i);
             store.applyRemoteVisit(row);
-            String updated = row.optString("updated_at", "");
-            if (!updated.isEmpty() && (max == null || max.isEmpty() || updated.compareTo(max) > 0)) max = updated;
+            max = newer(max, row.optString("updated_at", ""));
         }
         if (max != null && !max.isEmpty()) store.putMeta("visits_cursor", max);
+    }
+
+    private void pullPayments(String clinicId) throws Exception {
+        String cursor = store.meta("payments_cursor");
+        JSONArray rows = api.pullPayments(clinicId, cursor);
+        String max = cursor;
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.getJSONObject(i);
+            store.applyRemotePayment(row);
+            max = newer(max, row.optString("updated_at", ""));
+        }
+        if (max != null && !max.isEmpty()) store.putMeta("payments_cursor", max);
+    }
+
+    private void pullDayClosures(String clinicId) throws Exception {
+        String cursor = store.meta("closures_cursor");
+        JSONArray rows = api.pullDayClosures(clinicId, cursor);
+        String max = cursor;
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.getJSONObject(i);
+            store.applyRemoteDayClosure(row);
+            max = newer(max, row.optString("updated_at", ""));
+        }
+        if (max != null && !max.isEmpty()) store.putMeta("closures_cursor", max);
+    }
+
+    private static String newer(String current, String candidate) {
+        if (candidate == null || candidate.isEmpty()) return current;
+        if (current == null || current.isEmpty() || candidate.compareTo(current) > 0) return candidate;
+        return current;
     }
 }
