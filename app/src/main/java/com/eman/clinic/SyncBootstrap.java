@@ -17,29 +17,24 @@ public final class SyncBootstrap {
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(entity_type, local_id))");
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)");
 
-                db.execSQL("DROP TRIGGER IF EXISTS trg_sync_patients_insert");
-                db.execSQL("DROP TRIGGER IF EXISTS trg_sync_patients_update");
-                db.execSQL("DROP TRIGGER IF EXISTS trg_sync_visits_insert");
-                db.execSQL("DROP TRIGGER IF EXISTS trg_sync_visits_update");
+                String[] triggers = {
+                        "trg_sync_patients_insert", "trg_sync_patients_update",
+                        "trg_sync_visits_insert", "trg_sync_visits_update",
+                        "trg_sync_payments_insert", "trg_sync_payments_update",
+                        "trg_sync_closures_insert", "trg_sync_closures_update"
+                };
+                for (String trigger : triggers) db.execSQL("DROP TRIGGER IF EXISTS " + trigger);
 
                 String trackingWhen = " WHEN COALESCE((SELECT meta_value FROM sync_meta WHERE meta_key='suppress_tracking'),'0')<>'1' ";
-                db.execSQL("CREATE TRIGGER trg_sync_patients_insert AFTER INSERT ON patients" + trackingWhen + "BEGIN " +
-                        "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('patient',NEW.id,lower(hex(randomblob(16)))); " +
-                        "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('patient',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
-                db.execSQL("CREATE TRIGGER trg_sync_patients_update AFTER UPDATE ON patients" + trackingWhen + "BEGIN " +
-                        "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('patient',NEW.id,lower(hex(randomblob(16)))); " +
-                        "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('patient',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
-                db.execSQL("CREATE TRIGGER trg_sync_visits_insert AFTER INSERT ON visits" + trackingWhen + "BEGIN " +
-                        "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('visit',NEW.id,lower(hex(randomblob(16)))); " +
-                        "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('visit',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
-                db.execSQL("CREATE TRIGGER trg_sync_visits_update AFTER UPDATE ON visits" + trackingWhen + "BEGIN " +
-                        "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('visit',NEW.id,lower(hex(randomblob(16)))); " +
-                        "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('visit',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
+                createTrackingTriggers(db, "patients", "patient", trackingWhen);
+                createTrackingTriggers(db, "visits", "visit", trackingWhen);
+                createTrackingTriggers(db, "payments", "payment", trackingWhen);
+                createTrackingTriggers(db, "day_closures", "day_closure", trackingWhen);
 
-                db.execSQL("INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT 'patient',id,lower(hex(randomblob(16))) FROM patients");
-                db.execSQL("INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT 'visit',id,lower(hex(randomblob(16))) FROM visits");
-                db.execSQL("INSERT OR IGNORE INTO sync_dirty(entity_type,local_id,changed_at) SELECT 'patient',id,STRFTIME('%Y-%m-%d %H:%M:%f','now') FROM patients");
-                db.execSQL("INSERT OR IGNORE INTO sync_dirty(entity_type,local_id,changed_at) SELECT 'visit',id,STRFTIME('%Y-%m-%d %H:%M:%f','now') FROM visits");
+                seedExisting(db, "patients", "patient");
+                seedExisting(db, "visits", "visit");
+                seedExisting(db, "payments", "payment");
+                seedExisting(db, "day_closures", "day_closure");
 
                 db.setTransactionSuccessful();
             } finally {
@@ -48,5 +43,25 @@ public final class SyncBootstrap {
         } catch (Exception ignored) {
             // Sync tracking must never stop reception or doctor work.
         }
+    }
+
+    private static void createTrackingTriggers(SQLiteDatabase db, String table, String entity, String when) {
+        String prefix;
+        if ("patients".equals(table)) prefix = "patients";
+        else if ("visits".equals(table)) prefix = "visits";
+        else if ("payments".equals(table)) prefix = "payments";
+        else prefix = "closures";
+
+        db.execSQL("CREATE TRIGGER trg_sync_" + prefix + "_insert AFTER INSERT ON " + table + when + "BEGIN " +
+                "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('" + entity + "',NEW.id,lower(hex(randomblob(16)))); " +
+                "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('" + entity + "',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
+        db.execSQL("CREATE TRIGGER trg_sync_" + prefix + "_update AFTER UPDATE ON " + table + when + "BEGIN " +
+                "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('" + entity + "',NEW.id,lower(hex(randomblob(16)))); " +
+                "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('" + entity + "',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
+    }
+
+    private static void seedExisting(SQLiteDatabase db, String table, String entity) {
+        db.execSQL("INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT '" + entity + "',id,lower(hex(randomblob(16))) FROM " + table);
+        db.execSQL("INSERT OR IGNORE INTO sync_dirty(entity_type,local_id,changed_at) SELECT '" + entity + "',id,STRFTIME('%Y-%m-%d %H:%M:%f','now') FROM " + table);
     }
 }
