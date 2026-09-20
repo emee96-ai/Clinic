@@ -10,6 +10,7 @@
         <activity android:name=".MainActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".LoginActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".SubscriptionActivity" android:screenOrientation="portrait" android:exported="false" />
+        <activity android:name=".BillingActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity
             android:name=".LauncherActivity"
             android:screenOrientation="portrait"
