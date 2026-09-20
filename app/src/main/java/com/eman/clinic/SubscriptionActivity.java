@@ -9,7 +9,6 @@ import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -49,8 +48,15 @@ public class SubscriptionActivity extends Activity {
         info.setPadding(0, dp(14), 0, dp(20));
         root.addView(info);
 
-        TextView retry = button("إعادة التحقق من الاشتراك", true);
+        TextView payment = button("إرسال بيانات الدفع / التحويل", true);
+        payment.setOnClickListener(v -> startActivity(new Intent(this, BillingActivity.class)));
+        root.addView(payment);
+
+        TextView retry = button("إعادة التحقق من الاشتراك", false);
         retry.setOnClickListener(v -> recheck(retry));
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rp.setMargins(0, dp(10), 0, 0);
+        retry.setLayoutParams(rp);
         root.addView(retry);
 
         TextView logout = button("تسجيل الخروج", false);
