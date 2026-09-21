@@ -54,20 +54,24 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public long createPatient(String name, String phone, String gender) {
         if (!can("edit_patients")) return -1;
+        String cleanName = name == null ? "" : name.trim();
+        if (cleanName.length() < 2) return -1;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("card_no", nextCardNo());
-        v.put("full_name", name.trim());
+        v.put("full_name", cleanName);
         v.put("phone", phone == null ? "" : phone.trim());
         v.put("gender", gender == null ? "" : gender);
         v.put("created_at", now());
         long id = db.insertOrThrow("patients", null, v);
-        audit(db, "CREATE_PATIENT", "patient", id, name);
+        audit(db, "CREATE_PATIENT", "patient", id, cleanName);
         return id;
     }
 
     public long createVisit(long patientId, String type, int fee) {
         if (!can("register_visits")) return -1;
+        if (isTodayClosedInternal()) return -2;
+        if (!patientExists(patientId) || !ClinicWorkflowRules.isValidVisitType(type)) return -1;
         if (hasOpenVisit(patientId)) return -1;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
@@ -90,23 +94,29 @@ public class ClinicDb extends SQLiteOpenHelper {
         return result;
     }
 
-    public void sendToDoctor(long visitId) {
-        if (!can("manage_queue")) return;
-        setStatus(visitId, WAITING, "SEND_TO_DOCTOR");
+    public boolean sendToDoctor(long visitId) {
+        if (!can("manage_queue")) return false;
+        SQLiteDatabase db = getWritableDatabase();
+        ContentValues v = new ContentValues();
+        v.put("status", WAITING);
+        int changed = db.update("visits", v, "id=? AND status=?", new String[]{String.valueOf(visitId), REGISTERED});
+        if (changed > 0) audit(db, "SEND_TO_DOCTOR", "visit", visitId, WAITING);
+        return changed > 0;
     }
 
-    public void startVisit(long visitId) {
-        if (!can("manage_queue")) return;
+    public boolean startVisit(long visitId) {
+        if (!can("manage_queue")) return false;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("status", IN_CONSULT);
         v.put("started_at", now());
-        db.update("visits", v, "id=? AND status=?", new String[]{String.valueOf(visitId), WAITING});
-        audit(db, "START_VISIT", "visit", visitId, "");
+        int changed = db.update("visits", v, "id=? AND status=?", new String[]{String.valueOf(visitId), WAITING});
+        if (changed > 0) audit(db, "START_VISIT", "visit", visitId, "");
+        return changed > 0;
     }
 
-    public void saveClinical(long visitId, String complaint, String exam, String diagnosis, String labs, String treatment, String followup, boolean complete) {
-        if (!can("edit_clinical")) return;
+    public boolean saveClinical(long visitId, String complaint, String exam, String diagnosis, String labs, String treatment, String followup, boolean complete) {
+        if (!can("edit_clinical")) return false;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("complaint", safe(complaint));
@@ -121,32 +131,33 @@ public class ClinicDb extends SQLiteOpenHelper {
         } else {
             v.put("status", IN_CONSULT);
         }
-        db.update("visits", v, "id=?", new String[]{String.valueOf(visitId)});
-        audit(db, complete ? "COMPLETE_VISIT" : "SAVE_DRAFT", "visit", visitId, "");
+        int changed = db.update("visits", v, "id=? AND status=?", new String[]{String.valueOf(visitId), IN_CONSULT});
+        if (changed > 0) audit(db, complete ? "COMPLETE_VISIT" : "SAVE_DRAFT", "visit", visitId, "");
+        return changed > 0;
     }
 
     public boolean recordPayment(long visitId, int requestedAmount, String method) {
         if (!can("record_payments")) return false;
+        if (isTodayClosedInternal()) return false;
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
             Visit visit = getVisitInternal(db, visitId);
             if (visit == null) return false;
             int remaining = Math.max(0, visit.fee - visit.paidAmount);
-            int amount = Math.min(Math.max(0, requestedAmount), remaining);
-            if (amount <= 0) return false;
+            if (!ClinicWorkflowRules.canRecordPayment(requestedAmount, remaining, false)) return false;
 
             ContentValues pay = new ContentValues();
             pay.put("visit_id", visitId);
-            pay.put("amount", amount);
+            pay.put("amount", requestedAmount);
             pay.put("method", safe(method));
             pay.put("created_at", now());
             long paymentId = db.insertOrThrow("payments", null, pay);
 
             ContentValues upd = new ContentValues();
-            upd.put("paid_amount", visit.paidAmount + amount);
+            upd.put("paid_amount", visit.paidAmount + requestedAmount);
             db.update("visits", upd, "id=?", new String[]{String.valueOf(visitId)});
-            audit(db, "PAYMENT", "payment", paymentId, "visit=" + visitId + ", amount=" + amount);
+            audit(db, "PAYMENT", "payment", paymentId, "visit=" + visitId + ", amount=" + requestedAmount);
             db.setTransactionSuccessful();
             return true;
         } finally {
@@ -223,28 +234,34 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public Stats todayStats() {
         Stats s = new Stats();
-        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*), COALESCE(SUM(fee),0), COALESCE(SUM(paid_amount),0), COALESCE(SUM(CASE WHEN fee=0 THEN 1 ELSE 0 END),0) FROM visits WHERE date(created_at)=date('now','localtime')", null);
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*), COALESCE(SUM(fee),0), COALESCE(SUM(CASE WHEN fee=0 THEN 1 ELSE 0 END),0), " +
+                        "COALESCE(SUM(CASE WHEN fee>paid_amount THEN fee-paid_amount ELSE 0 END),0) " +
+                        "FROM visits WHERE date(created_at)=date('now','localtime')", null);
         if (c.moveToFirst()) {
             s.totalVisits = c.getInt(0);
             if (canFinanceRead()) {
                 s.totalCharges = c.getInt(1);
-                s.totalPaid = c.getInt(2);
-                s.waivedVisits = c.getInt(3);
+                s.waivedVisits = c.getInt(2);
+                s.outstanding = c.getInt(3);
             }
         }
         c.close();
-        if (canQueueRead()) {
-            Cursor q = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status<>?", new String[]{COMPLETED});
-            if (q.moveToFirst()) s.openQueue = q.getInt(0);
-            q.close();
+        if (canFinanceRead()) {
+            Cursor p = getReadableDatabase().rawQuery(
+                    "SELECT COALESCE(SUM(amount),0) FROM payments WHERE date(created_at)=date('now','localtime')", null);
+            if (p.moveToFirst()) s.totalPaid = p.getInt(0);
+            p.close();
         }
-        s.outstanding = Math.max(0, s.totalCharges - s.totalPaid);
+        if (canQueueRead()) s.openQueue = openQueueCountInternal();
         return s;
     }
 
     public boolean closeToday() {
         if (!can("close_day")) return false;
-        if (isTodayClosed()) return false;
+        if (isTodayClosedInternal()) return false;
+        int open = openQueueCountInternal();
+        if (!ClinicWorkflowRules.canCloseDay(open)) return false;
         Stats s = todayStats();
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
@@ -262,28 +279,45 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public boolean isTodayClosed() {
         if (!canFinanceRead()) return false;
-        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM day_closures WHERE day=?", new String[]{today()});
-        boolean r = c.moveToFirst() && c.getInt(0) > 0;
-        c.close();
-        return r;
+        return isTodayClosedInternal();
+    }
+
+    public boolean isOperationalDayClosed() {
+        return isTodayClosedInternal();
     }
 
     public int daysSinceLastVisit(long patientId) {
         if (!(can("view_patients") || can("register_visits"))) return 9999;
-        Cursor c = getReadableDatabase().rawQuery("SELECT CAST(julianday('now','localtime') - julianday(MAX(created_at)) AS INTEGER) FROM visits WHERE patient_id=? AND status=?", new String[]{String.valueOf(patientId), COMPLETED});
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT CAST(julianday('now','localtime') - julianday(MAX(COALESCE(completed_at,created_at))) AS INTEGER) " +
+                        "FROM visits WHERE patient_id=? AND status=?",
+                new String[]{String.valueOf(patientId), COMPLETED});
         int days = 9999;
         if (c.moveToFirst() && !c.isNull(0)) days = Math.max(0, c.getInt(0));
         c.close();
         return days;
     }
 
-    private void setStatus(long visitId, String status, String auditAction) {
-        if (!can("manage_queue")) return;
-        SQLiteDatabase db = getWritableDatabase();
-        ContentValues v = new ContentValues();
-        v.put("status", status);
-        db.update("visits", v, "id=?", new String[]{String.valueOf(visitId)});
-        audit(db, auditAction, "visit", visitId, status);
+    private boolean patientExists(long patientId) {
+        if (patientId <= 0) return false;
+        Cursor c = getReadableDatabase().rawQuery("SELECT 1 FROM patients WHERE id=? LIMIT 1", new String[]{String.valueOf(patientId)});
+        boolean exists = c.moveToFirst();
+        c.close();
+        return exists;
+    }
+
+    private int openQueueCountInternal() {
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status<>?", new String[]{COMPLETED});
+        int count = c.moveToFirst() ? c.getInt(0) : 0;
+        c.close();
+        return count;
+    }
+
+    private boolean isTodayClosedInternal() {
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM day_closures WHERE day=?", new String[]{today()});
+        boolean closed = c.moveToFirst() && c.getInt(0) > 0;
+        c.close();
+        return closed;
     }
 
     private int nextCardNo() {
