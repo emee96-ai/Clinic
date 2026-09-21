@@ -1,0 +1,19 @@
+name: Check Clinic Admin Web
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'admin-web/**'
+      - '.github/workflows/check-admin-web.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate admin web
+        run: node admin-web/check.js
