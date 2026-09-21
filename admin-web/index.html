@@ -16,14 +16,19 @@
       <label>البريد الإلكتروني<input id="email" type="email" autocomplete="email" /></label>
       <label>كلمة المرور<input id="password" type="password" autocomplete="current-password" /></label>
       <button id="loginBtn" class="primary">دخول</button>
-      <button id="signupBtn" class="secondary">إنشاء حساب الإدارة لأول مرة</button>
+      <button id="signupBtn" class="secondary">إنشاء حساب جديد</button>
       <div id="authMessage" class="message"></div>
     </section>
 
     <section id="noAccessView" class="auth-card hidden">
+      <div class="brand">العيادة</div>
       <h1>الحساب غير مخوّل</h1>
-      <p>تم تسجيل الدخول، لكن الحساب لم يُضف بعد كـ Platform Admin.</p>
+      <p>لو دي أول مرة تجهزي لوحة الإدارة، أدخلي رمز تهيئة المدير لمرة واحدة. بعد إنشاء أول مدير يتقفل الرمز تلقائياً.</p>
+      <label>اسم المدير<input id="adminDisplayName" maxlength="120" placeholder="مثلاً: إيمان" /></label>
+      <label>رمز تهيئة أول مدير<input id="adminSetupCode" type="password" autocomplete="off" placeholder="ADM-…" /></label>
+      <button id="claimAdminBtn" class="primary">تهيئة أول حساب إدارة</button>
       <button id="noAccessLogout" class="secondary">تسجيل الخروج</button>
+      <div id="claimMessage" class="message"></div>
     </section>
 
     <section id="dashboard" class="hidden">
@@ -33,8 +38,12 @@
       </header>
 
       <div id="globalMessage" class="message"></div>
-
       <section class="stats" id="stats"></section>
+
+      <section id="expiryPanel" class="panel hidden">
+        <div class="panel-head"><div><h2>اشتراكات قريبة من الانتهاء</h2><p>عيادات نشطة ينتهي اشتراكها خلال 7 أيام.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>العيادة</th><th>الباقة</th><th>مدفوع حتى</th><th>المتبقي</th></tr></thead><tbody id="expiryBody"></tbody></table></div>
+      </section>
 
       <section class="panel">
         <div class="panel-head"><div><h2>العيادات</h2><p>الحالة والباقات وتواريخ الاشتراك.</p></div><div class="filters"><input id="clinicSearch" placeholder="بحث باسم العيادة" /><select id="clinicStatus"><option value="">كل الحالات</option><option value="trialing">تجربة</option><option value="active">نشط</option><option value="past_due">متأخر</option><option value="suspended">موقوف</option><option value="cancelled">ملغي</option></select></div></div>
@@ -43,7 +52,7 @@
 
       <section class="grid-2">
         <section class="panel">
-          <div class="panel-head"><div><h2>طلبات دفع معلقة</h2><p>تأكيد أو رفض التحويلات المرسلة.</p></div></div>
+          <div class="panel-head"><div><h2>طلبات دفع معلقة</h2><p>تأكيد أو رفض التحويلات المرسلة من العيادات.</p></div></div>
           <div class="table-wrap"><table><thead><tr><th>العيادة</th><th>المبلغ</th><th>الطلب</th><th>المرجع</th><th>إجراء</th></tr></thead><tbody id="paymentsBody"></tbody></table></div>
         </section>
 
@@ -61,6 +70,11 @@
             <button class="primary full" type="submit">تسجيل الدفعة وتفعيل الاشتراك</button>
           </form>
         </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h2>سجل الدفعات</h2><p>آخر الدفعات المؤكدة والمرفوضة والمعلقة.</p></div><div class="filters"><select id="paymentStatus"><option value="">كل الحالات</option><option value="confirmed">مؤكد</option><option value="pending">معلق</option><option value="rejected">مرفوض</option></select></div></div>
+        <div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>العيادة</th><th>المبلغ</th><th>الحالة</th><th>الوسيلة</th><th>الباقة / المدة</th><th>المرجع</th></tr></thead><tbody id="paymentHistoryBody"></tbody></table></div>
       </section>
 
       <section class="panel">
