@@ -2,6 +2,7 @@ package com.eman.clinic;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -47,5 +48,32 @@ public class ClinicWorkflowRulesTest {
         assertTrue(ClinicWorkflowRules.isValidVisitType(ClinicDb.PAID_FOLLOWUP));
         assertTrue(ClinicWorkflowRules.isValidVisitType(ClinicDb.LAB_RESULT));
         assertFalse(ClinicWorkflowRules.isValidVisitType("FREE_MANUAL"));
+    }
+
+    @Test public void fullClinicDayScenarioCompletesSafely() {
+        String status = ClinicDb.REGISTERED;
+        int openQueue = 1;
+        int fee = 10_000;
+        int paid = 0;
+
+        assertTrue(ClinicWorkflowRules.canSendToDoctor(status));
+        status = ClinicDb.WAITING;
+        assertTrue(ClinicWorkflowRules.canStartVisit(status));
+        status = ClinicDb.IN_CONSULT;
+        assertTrue(ClinicWorkflowRules.canEditClinical(status));
+
+        assertTrue(ClinicWorkflowRules.canRecordPayment(4_000, fee - paid, false));
+        paid += 4_000;
+        assertEquals(6_000, fee - paid);
+        assertFalse(ClinicWorkflowRules.canCloseDay(openQueue));
+
+        status = ClinicDb.COMPLETED;
+        openQueue = 0;
+        assertFalse(ClinicWorkflowRules.canEditClinical(status));
+        assertTrue(ClinicWorkflowRules.canRecordPayment(6_000, fee - paid, false));
+        paid += 6_000;
+        assertEquals(fee, paid);
+        assertTrue(ClinicWorkflowRules.canCloseDay(openQueue));
+        assertFalse(ClinicWorkflowRules.canRecordPayment(1, fee - paid, true));
     }
 }
