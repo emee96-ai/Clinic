@@ -1,15 +1,21 @@
 package com.eman.clinic;
 
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 
-/** Stores the Clinic session, selected clinic and cached subscription state. */
+import org.json.JSONObject;
+
+/** Stores the Clinic session, selected clinic, member access and cached subscription state. */
 public final class AuthStore {
     private static final String PREF = "clinic_remote_auth";
+    private final Context context;
     private final SharedPreferences prefs;
 
     public AuthStore(Context context) {
-        prefs = context.getApplicationContext().getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        this.context = context.getApplicationContext();
+        prefs = this.context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
     }
 
     public void saveSession(String accessToken, String refreshToken, String userId) {
@@ -22,6 +28,37 @@ public final class AuthStore {
 
     public void saveClinic(String clinicId, String clinicName) {
         prefs.edit().putString("clinic_id", safe(clinicId)).putString("clinic_name", safe(clinicName)).apply();
+        context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
+                .putString("clinic_name", safe(clinicName).isEmpty() ? "العيادة" : safe(clinicName)).apply();
+    }
+
+    public void saveMembership(String role, JSONObject permissions, String displayName) {
+        String json = permissions == null ? "{}" : permissions.toString();
+        prefs.edit()
+                .putString("member_role", safe(role))
+                .putString("member_permissions", json)
+                .putString("member_display_name", safe(displayName))
+                .apply();
+
+        String localRole = "RECEPTION";
+        if ("substitute_doctor".equals(role)) localRole = "DOCTOR";
+        else if ("owner_doctor".equals(role)) localRole = "ADMIN";
+        context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
+                .putString("role", localRole)
+                .putBoolean("role_chosen", true)
+                .apply();
+        updateTeamLauncher(can("manage_staff"));
+    }
+
+    private void updateTeamLauncher(boolean enabled) {
+        try {
+            ComponentName name = new ComponentName(context, context.getPackageName() + ".TeamLauncher");
+            context.getPackageManager().setComponentEnabledSetting(
+                    name,
+                    enabled ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    PackageManager.DONT_KILL_APP
+            );
+        } catch (Exception ignored) {}
     }
 
     public void saveEntitlement(String plan, String status, boolean allowed, String reason,
@@ -44,11 +81,23 @@ public final class AuthStore {
     public String userId() { return prefs.getString("user_id", ""); }
     public String clinicId() { return prefs.getString("clinic_id", ""); }
     public String clinicName() { return prefs.getString("clinic_name", ""); }
+    public String memberRole() { return prefs.getString("member_role", ""); }
+    public String memberDisplayName() { return prefs.getString("member_display_name", ""); }
     public String subscriptionPlan() { return prefs.getString("subscription_plan", "trial"); }
     public String subscriptionStatus() { return prefs.getString("subscription_status", ""); }
     public String subscriptionReason() { return prefs.getString("subscription_reason", ""); }
     public String trialEndsAt() { return prefs.getString("trial_ends_at", ""); }
     public String paidUntil() { return prefs.getString("paid_until", ""); }
+
+    public JSONObject permissions() {
+        try { return new JSONObject(prefs.getString("member_permissions", "{}")); }
+        catch (Exception e) { return new JSONObject(); }
+    }
+
+    public boolean can(String permission) {
+        if ("owner_doctor".equals(memberRole())) return true;
+        return permissions().optBoolean(permission, false);
+    }
 
     public boolean hasRemoteIdentity() {
         return !refreshToken().isEmpty() && !userId().isEmpty() && !clinicId().isEmpty();
@@ -66,6 +115,7 @@ public final class AuthStore {
     public void clearPendingClinicName() { prefs.edit().remove("pending_clinic_name").apply(); }
 
     public void clearRemoteSession() {
+        updateTeamLauncher(false);
         prefs.edit().clear().apply();
     }
 
