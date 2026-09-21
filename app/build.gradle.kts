@@ -10,8 +10,8 @@ android {
         applicationId = "com.eman.clinic"
         minSdk = 24
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.9.0"
+        versionCode = 21
+        versionName = "1.10.0"
     }
 
     compileOptions {
@@ -24,4 +24,8 @@ android {
             isMinifyEnabled = false
         }
     }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
