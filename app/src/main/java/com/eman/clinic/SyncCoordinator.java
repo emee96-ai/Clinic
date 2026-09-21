@@ -33,10 +33,18 @@ public final class SyncCoordinator {
         try {
             AuthStore auth = new AuthStore(c);
             if (!auth.hasRemoteIdentity()) return;
+
+            SupabaseApi api = new SupabaseApi(c);
+            boolean activeMembership = api.resolveMembership();
+            if (!activeMembership) {
+                auth.markMembershipInactive();
+                return;
+            }
+
             new RemoteSync(c).syncOnce();
             if (auth.isSubscriptionBlocked()) ClinicApp.showSubscriptionBlocked();
         } catch (Exception ignored) {
-            // Network failure must never interrupt clinic work.
+            // Network failure must never interrupt clinic work or falsely revoke access.
         } finally {
             RUNNING.set(false);
         }
