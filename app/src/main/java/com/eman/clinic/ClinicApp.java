@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Application;
 import android.content.Intent;
 import android.os.Bundle;
+import android.widget.Toast;
 
 import java.lang.ref.WeakReference;
 
@@ -28,6 +29,16 @@ public class ClinicApp extends Application implements Application.ActivityLifecy
             activity.startActivity(new Intent(activity, SubscriptionActivity.class));
             activity.finish();
         });
+    }
+
+    public static void showSyncConflict(int count) {
+        Activity activity = currentActivity.get();
+        if (activity == null || activity.isFinishing() || count <= 0) return;
+        activity.runOnUiThread(() -> Toast.makeText(activity,
+                count == 1
+                        ? "تم اكتشاف تعديل متعارض وحفظ النسختين للمراجعة"
+                        : "تم اكتشاف " + count + " تعديلات متعارضة وحفظ النسخ للمراجعة",
+                Toast.LENGTH_LONG).show());
     }
 
     @Override public void onActivityResumed(Activity activity) { currentActivity = new WeakReference<>(activity); }
