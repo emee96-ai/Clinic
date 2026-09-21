@@ -15,6 +15,7 @@ public class ClinicApp extends Application implements Application.ActivityLifecy
         registerActivityLifecycleCallbacks(this);
         SyncBootstrap.install(this);
         SyncCoordinator.start(this);
+        LocalSyncManager.start(this);
     }
 
     public static void showSubscriptionBlocked() {
