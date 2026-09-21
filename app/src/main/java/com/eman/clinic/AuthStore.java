@@ -33,11 +33,14 @@ public final class AuthStore {
     }
 
     public void saveMembership(String role, JSONObject permissions, String displayName) {
-        String json = permissions == null ? "{}" : permissions.toString();
+        JSONObject effective = permissions == null ? new JSONObject() : permissions;
+        String json = effective.toString();
         prefs.edit()
                 .putString("member_role", safe(role))
                 .putString("member_permissions", json)
                 .putString("member_display_name", safe(displayName))
+                .putBoolean("member_active", true)
+                .putLong("membership_checked_local_ms", System.currentTimeMillis())
                 .apply();
 
         String localRole = "RECEPTION";
@@ -48,6 +51,16 @@ public final class AuthStore {
                 .putBoolean("role_chosen", true)
                 .apply();
         updateTeamLauncher(can("manage_staff"));
+        if (!can("view_clinical")) purgeClinicalCache();
+    }
+
+    public void markMembershipInactive() {
+        prefs.edit()
+                .putBoolean("member_active", false)
+                .putLong("membership_checked_local_ms", System.currentTimeMillis())
+                .apply();
+        updateTeamLauncher(false);
+        purgeClinicalCache();
     }
 
     private void updateTeamLauncher(boolean enabled) {
@@ -58,6 +71,20 @@ public final class AuthStore {
                     enabled ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED : PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                     PackageManager.DONT_KILL_APP
             );
+        } catch (Exception ignored) {}
+    }
+
+    private void purgeClinicalCache() {
+        try {
+            SyncStore store = new SyncStore(context);
+            store.putMeta("suppress_tracking", "1");
+            try {
+                new ClinicDb(context).getWritableDatabase().execSQL(
+                        "UPDATE visits SET complaint='',exam='',diagnosis='',labs='',treatment='',followup=''"
+                );
+            } finally {
+                store.putMeta("suppress_tracking", "0");
+            }
         } catch (Exception ignored) {}
     }
 
@@ -83,6 +110,7 @@ public final class AuthStore {
     public String clinicName() { return prefs.getString("clinic_name", ""); }
     public String memberRole() { return prefs.getString("member_role", ""); }
     public String memberDisplayName() { return prefs.getString("member_display_name", ""); }
+    public boolean isMembershipActive() { return prefs.getBoolean("member_active", !hasRemoteIdentity()); }
     public String subscriptionPlan() { return prefs.getString("subscription_plan", "trial"); }
     public String subscriptionStatus() { return prefs.getString("subscription_status", ""); }
     public String subscriptionReason() { return prefs.getString("subscription_reason", ""); }
@@ -95,6 +123,7 @@ public final class AuthStore {
     }
 
     public boolean can(String permission) {
+        if (hasRemoteIdentity() && !prefs.getBoolean("member_active", true)) return false;
         if ("owner_doctor".equals(memberRole())) return true;
         return permissions().optBoolean(permission, false);
     }
