@@ -23,8 +23,11 @@ public class ClinicDb extends SQLiteOpenHelper {
     public static final String IN_CONSULT = "IN_CONSULT";
     public static final String COMPLETED = "COMPLETED";
 
+    private final AuthStore auth;
+
     public ClinicDb(Context context) {
         super(context, "clinic_offline.db", null, 2);
+        auth = new AuthStore(context.getApplicationContext());
     }
 
     @Override public void onCreate(SQLiteDatabase db) {
@@ -50,6 +53,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public long createPatient(String name, String phone, String gender) {
+        if (!can("edit_patients")) return -1;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("card_no", nextCardNo());
@@ -63,6 +67,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public long createVisit(long patientId, String type, int fee) {
+        if (!can("register_visits")) return -1;
         if (hasOpenVisit(patientId)) return -1;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
@@ -78,6 +83,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public boolean hasOpenVisit(long patientId) {
+        if (!(can("view_patients") || can("manage_queue") || can("register_visits"))) return false;
         Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE patient_id=? AND status<>?", new String[]{String.valueOf(patientId), COMPLETED});
         boolean result = c.moveToFirst() && c.getInt(0) > 0;
         c.close();
@@ -85,10 +91,12 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public void sendToDoctor(long visitId) {
+        if (!can("manage_queue")) return;
         setStatus(visitId, WAITING, "SEND_TO_DOCTOR");
     }
 
     public void startVisit(long visitId) {
+        if (!can("manage_queue")) return;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("status", IN_CONSULT);
@@ -98,6 +106,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public void saveClinical(long visitId, String complaint, String exam, String diagnosis, String labs, String treatment, String followup, boolean complete) {
+        if (!can("edit_clinical")) return;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("complaint", safe(complaint));
@@ -117,6 +126,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public boolean recordPayment(long visitId, int requestedAmount, String method) {
+        if (!can("record_payments")) return false;
         SQLiteDatabase db = getWritableDatabase();
         db.beginTransaction();
         try {
@@ -145,6 +155,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public Patient getPatient(long id) {
+        if (!can("view_patients")) return null;
         Cursor c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, created_at FROM patients WHERE id=?", new String[]{String.valueOf(id)});
         Patient p = c.moveToFirst() ? patientFrom(c) : null;
         c.close();
@@ -152,6 +163,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public Patient findPatient(String query) {
+        if (!can("view_patients")) return null;
         String q = query == null ? "" : query.trim();
         if (q.isEmpty()) return null;
         Cursor c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, created_at FROM patients WHERE CAST(card_no AS TEXT)=? OR phone=? OR full_name LIKE ? ORDER BY id DESC LIMIT 1", new String[]{q, q, "%" + q + "%"});
@@ -162,6 +174,7 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public List<Patient> searchPatients(String query) {
         List<Patient> out = new ArrayList<>();
+        if (!can("view_patients")) return out;
         String q = query == null ? "" : query.trim();
         Cursor c;
         if (q.isEmpty()) {
@@ -175,22 +188,27 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public Visit getVisit(long id) {
-        return getVisitInternal(getReadableDatabase(), id);
+        if (!canQueueRead()) return null;
+        return sanitizeClinical(getVisitInternal(getReadableDatabase(), id));
     }
 
     public List<Visit> openQueue() {
+        if (!canQueueRead()) return new ArrayList<>();
         return queryVisits("WHERE v.status<>? ORDER BY v.id ASC", new String[]{COMPLETED});
     }
 
     public List<Visit> doctorQueue() {
+        if (!can("view_clinical")) return new ArrayList<>();
         return queryVisits("WHERE v.status IN (?,?) ORDER BY CASE v.status WHEN 'IN_CONSULT' THEN 0 ELSE 1 END, v.id ASC", new String[]{IN_CONSULT, WAITING});
     }
 
     public List<Visit> visitsForPatient(long patientId) {
+        if (!can("view_patients")) return new ArrayList<>();
         return queryVisits("WHERE v.patient_id=? ORDER BY v.id DESC", new String[]{String.valueOf(patientId)});
     }
 
     public List<Visit> unpaidToday() {
+        if (!canFinanceRead()) return new ArrayList<>();
         return queryVisits("WHERE date(v.created_at)=date('now','localtime') AND v.fee>v.paid_amount ORDER BY v.id ASC", new String[]{});
     }
 
@@ -198,7 +216,7 @@ public class ClinicDb extends SQLiteOpenHelper {
         List<Visit> out = new ArrayList<>();
         String sql = "SELECT v.id,v.patient_id,v.visit_type,v.status,v.fee,v.paid_amount,v.complaint,v.exam,v.diagnosis,v.labs,v.treatment,v.followup,v.created_at,v.started_at,v.completed_at,p.full_name,p.card_no FROM visits v JOIN patients p ON p.id=v.patient_id " + where;
         Cursor c = getReadableDatabase().rawQuery(sql, args);
-        while (c.moveToNext()) out.add(visitFrom(c));
+        while (c.moveToNext()) out.add(sanitizeClinical(visitFrom(c)));
         c.close();
         return out;
     }
@@ -208,19 +226,24 @@ public class ClinicDb extends SQLiteOpenHelper {
         Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*), COALESCE(SUM(fee),0), COALESCE(SUM(paid_amount),0), COALESCE(SUM(CASE WHEN fee=0 THEN 1 ELSE 0 END),0) FROM visits WHERE date(created_at)=date('now','localtime')", null);
         if (c.moveToFirst()) {
             s.totalVisits = c.getInt(0);
-            s.totalCharges = c.getInt(1);
-            s.totalPaid = c.getInt(2);
-            s.waivedVisits = c.getInt(3);
+            if (canFinanceRead()) {
+                s.totalCharges = c.getInt(1);
+                s.totalPaid = c.getInt(2);
+                s.waivedVisits = c.getInt(3);
+            }
         }
         c.close();
-        Cursor q = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status<>?", new String[]{COMPLETED});
-        if (q.moveToFirst()) s.openQueue = q.getInt(0);
-        q.close();
+        if (canQueueRead()) {
+            Cursor q = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status<>?", new String[]{COMPLETED});
+            if (q.moveToFirst()) s.openQueue = q.getInt(0);
+            q.close();
+        }
         s.outstanding = Math.max(0, s.totalCharges - s.totalPaid);
         return s;
     }
 
     public boolean closeToday() {
+        if (!can("close_day")) return false;
         if (isTodayClosed()) return false;
         Stats s = todayStats();
         SQLiteDatabase db = getWritableDatabase();
@@ -238,6 +261,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public boolean isTodayClosed() {
+        if (!canFinanceRead()) return false;
         Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM day_closures WHERE day=?", new String[]{today()});
         boolean r = c.moveToFirst() && c.getInt(0) > 0;
         c.close();
@@ -245,6 +269,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public int daysSinceLastVisit(long patientId) {
+        if (!(can("view_patients") || can("register_visits"))) return 9999;
         Cursor c = getReadableDatabase().rawQuery("SELECT CAST(julianday('now','localtime') - julianday(MAX(created_at)) AS INTEGER) FROM visits WHERE patient_id=? AND status=?", new String[]{String.valueOf(patientId), COMPLETED});
         int days = 9999;
         if (c.moveToFirst() && !c.isNull(0)) days = Math.max(0, c.getInt(0));
@@ -253,6 +278,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private void setStatus(long visitId, String status, String auditAction) {
+        if (!can("manage_queue")) return;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("status", status);
@@ -305,6 +331,29 @@ public class ClinicDb extends SQLiteOpenHelper {
         v.patientName = safe(c.getString(15));
         v.cardNo = c.getInt(16);
         return v;
+    }
+
+    private Visit sanitizeClinical(Visit v) {
+        if (v == null || can("view_clinical")) return v;
+        v.complaint = "";
+        v.exam = "";
+        v.diagnosis = "";
+        v.labs = "";
+        v.treatment = "";
+        v.followup = "";
+        return v;
+    }
+
+    private boolean can(String permission) {
+        return !auth.hasRemoteIdentity() || auth.can(permission);
+    }
+
+    private boolean canQueueRead() {
+        return can("manage_queue") || can("view_clinical");
+    }
+
+    private boolean canFinanceRead() {
+        return can("view_finance") || can("record_payments") || can("close_day");
     }
 
     private void audit(SQLiteDatabase db, String action, String entityType, long entityId, String details) {
