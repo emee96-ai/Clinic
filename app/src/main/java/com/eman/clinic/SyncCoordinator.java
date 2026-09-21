@@ -41,10 +41,12 @@ public final class SyncCoordinator {
                 return;
             }
 
-            new RemoteSync(c).syncOnce();
+            int conflicts = new ResilientRemoteSync(c).syncOnce();
+            if (conflicts > 0) ClinicApp.showSyncConflict(conflicts);
             if (auth.isSubscriptionBlocked()) ClinicApp.showSubscriptionBlocked();
         } catch (Exception ignored) {
             // Network failure must never interrupt clinic work or falsely revoke access.
+            // The SQLite outbox remains intact and the next pass retries automatically.
         } finally {
             RUNNING.set(false);
         }
