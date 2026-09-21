@@ -45,6 +45,7 @@ import javax.crypto.spec.SecretKeySpec;
  * Encrypted peer-to-peer sync for phones connected to the same Wi-Fi / hotspot.
  * Internet is not required. The existing sync_dirty outbox remains the source of
  * truth, so any device that later gets internet can still upload changes to Supabase.
+ * LAN payloads are filtered by the signed-in clinic member permissions.
  */
 public final class LocalSyncManager {
     private static final String PREF = "clinic_lan_sync";
@@ -239,15 +240,20 @@ public final class LocalSyncManager {
     private static JSONObject buildBatch() throws Exception {
         Context c = app;
         SyncStore store = new SyncStore(c);
+        AuthStore auth = new AuthStore(c);
         String localDevice = store.deviceId();
         JSONArray items = new JSONArray();
         Set<String> included = new HashSet<>();
         List<SyncStore.SyncItem> pending = store.pending(300);
         for (SyncStore.SyncItem item : pending) {
+            if (!canSend(auth, item.entityType)) continue;
             JSONObject payload = new JSONObject(item.payload);
+            sanitizeOutgoing(auth, item.entityType, payload);
             if ("visit".equals(item.entityType)) {
                 String patientKey = payload.optString("patient_sync_key", "");
-                if (!patientKey.isEmpty()) addPatientDependency(items, included, patientKey, localDevice);
+                if (!patientKey.isEmpty() && auth.can("view_patients")) {
+                    addPatientDependency(items, included, patientKey, localDevice);
+                }
             }
             JSONObject e = envelope(item.entityType, item.syncKey, item.changedAt,
                     originFor(item.entityType, item.syncKey, item.changedAt, localDevice), payload, false);
@@ -256,10 +262,24 @@ public final class LocalSyncManager {
         }
         JSONObject batch = new JSONObject();
         batch.put("mode", "batch");
-        batch.put("clinic_id", new AuthStore(c).clinicId());
+        batch.put("clinic_id", auth.clinicId());
         batch.put("sender_device", localDevice);
         batch.put("items", items);
         return batch;
+    }
+
+    private static void sanitizeOutgoing(AuthStore auth, String type, JSONObject payload) {
+        if (!"visit".equals(type)) return;
+        if (!auth.can("edit_clinical")) stripClinical(payload);
+        if (!auth.can("manage_queue")) {
+            payload.remove("status");
+            payload.remove("started_at");
+            payload.remove("completed_at");
+        }
+        if (!(auth.can("register_visits") || auth.can("record_payments") || auth.can("view_finance"))) {
+            payload.remove("fee");
+            payload.remove("paid_amount");
+        }
     }
 
     private static void addPatientDependency(JSONArray items, Set<String> included, String syncKey, String localDevice) {
@@ -318,6 +338,9 @@ public final class LocalSyncManager {
         JSONObject payload = e.optJSONObject("payload");
         if (type.isEmpty() || syncKey.isEmpty() || payload == null) return;
 
+        AuthStore auth = new AuthStore(app);
+        if (!canReceive(auth, type)) return;
+
         SyncStore store = new SyncStore(app);
         Long localId = store.localIdForKey(type, syncKey);
         if (dependencyOnly && localId != null) return;
@@ -334,10 +357,8 @@ public final class LocalSyncManager {
         try {
             row.put("sync_key", syncKey);
             if ("visit".equals(type)) {
-                JSONObject patient = new JSONObject();
-                patient.put("sync_key", row.optString("patient_sync_key", ""));
-                row.put("patient", patient);
-                store.applyRemoteVisit(row);
+                if (!auth.can("view_clinical")) stripClinical(row);
+                applyLanVisit(store, row, syncKey);
             } else if ("patient".equals(type)) {
                 if (hasCardCollision(syncKey, row.optInt("card_no", -1))) {
                     noteError("يوجد تعارض في رقم كرت " + row.optInt("card_no", 0));
@@ -356,9 +377,89 @@ public final class LocalSyncManager {
 
         Long appliedId = store.localIdForKey(type, syncKey);
         if (appliedId == null || dependencyOnly) return;
-        markDirty(type, appliedId, incomingChanged);
+        if (canSend(auth, type)) markDirty(type, appliedId, incomingChanged);
         store.putMeta(versionMeta(type, syncKey), incomingChanged);
         store.putMeta(originMeta(type, syncKey), incomingOrigin);
+    }
+
+    private static void applyLanVisit(SyncStore store, JSONObject row, String syncKey) {
+        String patientKey = row.optString("patient_sync_key", "");
+        Long patientLocalId = store.localIdForKey("patient", patientKey);
+        if (patientLocalId == null) return;
+        Long localId = store.localIdForKey("visit", syncKey);
+
+        ContentValues v = new ContentValues();
+        v.put("patient_id", patientLocalId);
+        putStringIfPresent(v, row, "visit_type");
+        putStringIfPresent(v, row, "status");
+        putIntIfPresent(v, row, "fee");
+        putIntIfPresent(v, row, "paid_amount");
+        putStringIfPresent(v, row, "complaint");
+        putStringIfPresent(v, row, "exam");
+        putStringIfPresent(v, row, "diagnosis");
+        putStringIfPresent(v, row, "labs");
+        putStringIfPresent(v, row, "treatment");
+        putStringIfPresent(v, row, "followup");
+        putStringIfPresent(v, row, "created_at");
+        putNullableStringIfPresent(v, row, "started_at");
+        putNullableStringIfPresent(v, row, "completed_at");
+
+        if (localId == null) {
+            if (!row.has("visit_type") || !row.has("status") || !row.has("created_at")) return;
+        }
+
+        SQLiteDatabase db = new ClinicDb(app).getWritableDatabase();
+        store.putMeta("suppress_tracking", "1");
+        try {
+            long id;
+            if (localId == null) id = db.insert("visits", null, v);
+            else {
+                db.update("visits", v, "id=?", new String[]{String.valueOf(localId)});
+                id = localId;
+            }
+            if (id > 0) store.bindRemoteKey("visit", id, syncKey);
+        } finally {
+            store.putMeta("suppress_tracking", "0");
+        }
+    }
+
+    private static void putStringIfPresent(ContentValues v, JSONObject row, String key) {
+        if (row.has(key) && !row.isNull(key)) v.put(key, row.optString(key, ""));
+    }
+
+    private static void putNullableStringIfPresent(ContentValues v, JSONObject row, String key) {
+        if (!row.has(key)) return;
+        if (row.isNull(key) || row.optString(key, "").isEmpty()) v.putNull(key);
+        else v.put(key, row.optString(key, ""));
+    }
+
+    private static void putIntIfPresent(ContentValues v, JSONObject row, String key) {
+        if (row.has(key) && !row.isNull(key)) v.put(key, row.optInt(key, 0));
+    }
+
+    private static void stripClinical(JSONObject payload) {
+        payload.remove("complaint");
+        payload.remove("exam");
+        payload.remove("diagnosis");
+        payload.remove("labs");
+        payload.remove("treatment");
+        payload.remove("followup");
+    }
+
+    private static boolean canSend(AuthStore auth, String type) {
+        if ("patient".equals(type)) return auth.can("edit_patients");
+        if ("visit".equals(type)) return auth.can("register_visits") || auth.can("manage_queue") || auth.can("edit_clinical");
+        if ("payment".equals(type)) return auth.can("record_payments");
+        if ("day_closure".equals(type)) return auth.can("close_day");
+        return false;
+    }
+
+    private static boolean canReceive(AuthStore auth, String type) {
+        if ("patient".equals(type)) return auth.can("view_patients");
+        if ("visit".equals(type)) return auth.can("manage_queue") || auth.can("view_clinical");
+        if ("payment".equals(type)) return auth.can("view_finance") || auth.can("record_payments");
+        if ("day_closure".equals(type)) return auth.can("view_finance") || auth.can("close_day");
+        return false;
     }
 
     private static boolean hasCardCollision(String syncKey, int cardNo) {
