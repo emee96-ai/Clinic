@@ -11,6 +11,7 @@
         <activity android:name=".LoginActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".SubscriptionActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".BillingActivity" android:screenOrientation="portrait" android:exported="false" />
+        <activity android:name=".StaffActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity
             android:name=".LauncherActivity"
             android:screenOrientation="portrait"
@@ -20,5 +21,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity-alias
+            android:name=".TeamLauncher"
+            android:targetActivity=".StaffActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:label="فريق العيادة">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
     </application>
 </manifest>
