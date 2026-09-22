@@ -11,7 +11,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.view.View;
-import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -112,7 +111,11 @@ public class LocalSyncActivity extends Activity {
 
         TextView sync = ClinicUi.button(this,"مزامنة الآن",true);
         sync.setOnClickListener(v -> {
-            if (!LocalSyncManager.configured(this)) { toast("احفظي رمز الربط أولاً"); return; }
+            AuthStore currentAuth = new AuthStore(this);
+            if (currentAuth.clinicId().isEmpty() || LocalSyncManager.pairKey(this).length() < 16) {
+                toast("اربطي الحساب واحفظي رمز الربط أولاً");
+                return;
+            }
             LocalSyncManager.kick(this);
             updateStatus("جاري البحث عن أجهزة العيادة القريبة…");
             toast("بدأ البحث عن الأجهزة");
