@@ -45,8 +45,15 @@ jobs:
             echo "Unexpected signed APK in unsigned release-candidate job" >&2
             exit 1
           fi
+          "$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign" -c -v 4 "$APK"
+      - name: Stage signing verifier
+        run: |
+          mkdir -p app/build/release-tools
+          cp "$ANDROID_SDK_ROOT/build-tools/35.0.0/lib/apksigner.jar" app/build/release-tools/apksigner.jar
       - uses: actions/upload-artifact@v4
         with:
           name: clinic-release-candidate-unsigned
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          path: |
+            app/build/outputs/apk/release/app-release-unsigned.apk
+            app/build/release-tools/apksigner.jar
           retention-days: 7
