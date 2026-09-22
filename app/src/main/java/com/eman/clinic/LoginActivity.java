@@ -3,7 +3,6 @@ package com.eman.clinic;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
-import android.graphics.Typeface;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -19,187 +18,315 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class LoginActivity extends Activity {
+    private static final int MODE_LOGIN = 0;
+    private static final int MODE_OWNER = 1;
+    private static final int MODE_JOIN = 2;
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private EditText email, password, displayName, clinicName, inviteCode;
-    private TextView status, login, doctorSignup, joinSignup;
-    private final int primary = Color.rgb(14, 113, 105);
-    private final int ink = Color.rgb(24, 35, 39);
-    private final int muted = Color.rgb(103, 116, 121);
+    private TextView status, primaryAction, secondaryAction, modeLogin, modeOwner, modeJoin, helper;
+    private LinearLayout nameBox, clinicBox, inviteBox;
+    private int mode = MODE_LOGIN;
+    private boolean busy;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        getWindow().setStatusBarColor(Color.WHITE);
+        getWindow().setNavigationBarColor(Color.WHITE);
         buildUi();
+        setMode(MODE_LOGIN);
     }
 
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(24), dp(34), dp(24), dp(30));
-        root.setBackgroundColor(Color.rgb(245, 247, 248));
+        root.setPadding(dp(20), dp(28), dp(20), dp(28));
+        root.setBackgroundColor(ClinicUi.BG);
         scroll.addView(root);
 
-        root.addView(text("الدخول للعيادة", 27, ink, true));
-        TextView sub = text("الدكتور ينشئ العيادة بحسابه. المسجلة أو الدكتور البديل يعملوا حساباتهم ثم يربطهم الدكتور برمز دعوة.", 14, muted, false);
-        sub.setPadding(0, dp(6), 0, dp(20));
-        root.addView(sub);
+        TextView brand = ClinicUi.text(this, "العيادة", 15, ClinicUi.PRIMARY, true);
+        root.addView(brand);
+        root.addView(ClinicUi.text(this, "ابدئي حسب نوع حسابك", 28, ClinicUi.INK, true));
+        helper = ClinicUi.text(this, "", 14, ClinicUi.MUTED, false);
+        helper.setPadding(0, dp(5), 0, dp(16));
+        root.addView(helper);
 
-        displayName = field("الاسم الظاهر — مثال: د. أحمد / سارة الاستقبال");
-        email = field("البريد الإلكتروني");
+        LinearLayout modes = new LinearLayout(this);
+        modes.setOrientation(LinearLayout.HORIZONTAL);
+        modeLogin = modeButton("دخول", MODE_LOGIN);
+        modeOwner = modeButton("عيادة جديدة", MODE_OWNER);
+        modeJoin = modeButton("رمز دعوة", MODE_JOIN);
+        modes.addView(modeLogin, modeParams(true));
+        modes.addView(modeOwner, modeParams(false));
+        modes.addView(modeJoin, modeParams(false));
+        root.addView(modes);
+        root.addView(ClinicUi.space(this, 14));
+
+        LinearLayout form = ClinicUi.card(this);
+        displayName = ClinicUi.field(this, "الاسم الظاهر — مثال: د. أحمد / سارة الاستقبال");
+        email = ClinicUi.field(this, "البريد الإلكتروني");
         email.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        password = field("كلمة المرور");
+        password = ClinicUi.field(this, "كلمة المرور");
         password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        clinicName = field("اسم العيادة — للدكتور المالك فقط");
-        inviteCode = field("رمز الدعوة — للمسجلة أو الدكتور البديل");
+        clinicName = ClinicUi.field(this, "اسم العيادة");
+        inviteCode = ClinicUi.field(this, "رمز الدعوة من الدكتور");
         inviteCode.setAllCaps(true);
 
-        root.addView(displayName); root.addView(space(9));
-        root.addView(email); root.addView(space(9));
-        root.addView(password); root.addView(space(9));
-        root.addView(clinicName); root.addView(space(9));
-        root.addView(inviteCode); root.addView(space(12));
+        nameBox = ClinicUi.labeled(this, "الاسم", displayName);
+        clinicBox = ClinicUi.labeled(this, "اسم العيادة", clinicName);
+        inviteBox = ClinicUi.labeled(this, "رمز الدعوة", inviteCode);
+        form.addView(nameBox);
+        form.addView(clinicBox);
+        form.addView(inviteBox);
+        form.addView(ClinicUi.labeled(this, "البريد الإلكتروني", email));
+        form.addView(ClinicUi.labeled(this, "كلمة المرور", password));
 
-        status = text("", 13, muted, false);
-        root.addView(status); root.addView(space(8));
+        status = ClinicUi.status(this, "", false, false);
+        status.setVisibility(View.GONE);
+        form.addView(status);
+        form.addView(ClinicUi.space(this, 10));
 
-        login = button("تسجيل الدخول", true);
-        login.setOnClickListener(v -> signIn());
-        root.addView(login); root.addView(space(10));
+        primaryAction = ClinicUi.button(this, "تسجيل الدخول", true);
+        primaryAction.setOnClickListener(v -> runPrimaryAction());
+        form.addView(primaryAction);
 
-        doctorSignup = button("إنشاء حساب الدكتور وعيادة جديدة", false);
-        doctorSignup.setOnClickListener(v -> signUpDoctor());
-        root.addView(doctorSignup); root.addView(space(10));
+        secondaryAction = ClinicUi.softButton(this, "");
+        secondaryAction.setOnClickListener(v -> runSecondaryAction());
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sp.setMargins(0, dp(9), 0, 0);
+        secondaryAction.setLayoutParams(sp);
+        form.addView(secondaryAction);
+        root.addView(form);
 
-        joinSignup = button("إنشاء حساب والانضمام برمز الدعوة", false);
-        joinSignup.setOnClickListener(v -> signUpInvitee());
-        root.addView(joinSignup);
-
-        TextView note = text("بعد أول ربط، بيانات العيادة تظل محفوظة على الجهاز ويستمر الشغل عند ضعف الشبكة.", 12, muted, false);
-        note.setPadding(0, dp(18), 0, 0);
+        LinearLayout note = ClinicUi.card(this);
+        note.addView(ClinicUi.text(this, "الشغل ما بوقف مع ضعف الشبكة", 16, ClinicUi.INK, true));
+        note.addView(ClinicUi.text(this, "بعد أول ربط بالحساب، بيانات العيادة تظل محفوظة على الجهاز والمزامنة تكمل تلقائياً عند توفر الشبكة.", 13, ClinicUi.MUTED, false));
         root.addView(note);
+
         setContentView(scroll);
     }
 
+    private TextView modeButton(String label, int target) {
+        TextView t = ClinicUi.text(this, label, 13, ClinicUi.MUTED, true);
+        t.setGravity(Gravity.CENTER);
+        t.setMinHeight(dp(46));
+        t.setOnClickListener(v -> { if (!busy) setMode(target); });
+        return t;
+    }
+
+    private LinearLayout.LayoutParams modeParams(boolean first) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(46), 1);
+        if (!first) p.setMargins(dp(6), 0, 0, 0);
+        return p;
+    }
+
+    private void setMode(int next) {
+        mode = next;
+        clearStatus();
+        boolean owner = mode == MODE_OWNER;
+        boolean join = mode == MODE_JOIN;
+        nameBox.setVisibility(owner || join ? View.VISIBLE : View.GONE);
+        clinicBox.setVisibility(owner ? View.VISIBLE : View.GONE);
+        inviteBox.setVisibility(join ? View.VISIBLE : View.GONE);
+        secondaryAction.setVisibility(mode == MODE_LOGIN ? View.GONE : View.VISIBLE);
+
+        if (mode == MODE_LOGIN) {
+            helper.setText("لو حسابك مربوط بعيادة من قبل، دخلي بالبريد وكلمة المرور فقط.");
+            primaryAction.setText("تسجيل الدخول");
+        } else if (mode == MODE_OWNER) {
+            helper.setText("الدكتور المالك ينشئ حسابه وعيادته، وبعدها يقدر يدعو المسجلة والدكتور البديل.");
+            primaryAction.setText("إنشاء حساب وعيادة جديدة");
+            secondaryAction.setText("الحساب موجود — إكمال إنشاء العيادة");
+        } else {
+            helper.setText("للمسجلة أو الدكتور البديل: استخدمي رمز الدعوة الصادر من الدكتور المالك.");
+            primaryAction.setText("إنشاء حساب والانضمام للعيادة");
+            secondaryAction.setText("الحساب موجود — ربطه برمز الدعوة");
+        }
+        styleModes();
+    }
+
+    private void styleModes() {
+        TextView[] views = {modeLogin, modeOwner, modeJoin};
+        for (int i = 0; i < views.length; i++) {
+            boolean active = i == mode;
+            views[i].setTextColor(active ? Color.WHITE : ClinicUi.PRIMARY_DARK);
+            views[i].setBackground(active
+                    ? ClinicUi.round(this, ClinicUi.PRIMARY, 13)
+                    : ClinicUi.stroke(this, ClinicUi.SURFACE, ClinicUi.LINE, 13));
+        }
+    }
+
+    private void runPrimaryAction() {
+        if (mode == MODE_LOGIN) signIn();
+        else if (mode == MODE_OWNER) signUpDoctor();
+        else signUpInvitee();
+    }
+
+    private void runSecondaryAction() {
+        if (mode == MODE_OWNER) linkExistingOwner();
+        else if (mode == MODE_JOIN) linkExistingInvitee();
+    }
+
     private void signIn() {
-        String e = email.getText().toString().trim();
-        String p = password.getText().toString();
+        String e = str(email).trim(), p = str(password);
         if (!valid(e, p)) return;
-        busy(true, "جاري تسجيل الدخول والربط…");
+        setBusy(true, "جاري تسجيل الدخول…");
         executor.execute(() -> {
             try {
                 SupabaseApi api = new SupabaseApi(this);
                 api.signIn(e, p);
-                boolean linked = api.resolveMembership();
-                if (!linked && !str(inviteCode).trim().isEmpty()) linked = api.acceptInvite(str(inviteCode), str(displayName));
-                if (!linked && !str(clinicName).trim().isEmpty()) linked = api.createDoctorClinic(str(clinicName), str(displayName));
-                if (!linked) throw new Exception("الحساب غير مربوط بعيادة. للدكتور: اكتبي اسم العيادة. للموظف: اكتبي رمز الدعوة.");
+                if (!api.resolveMembership()) throw new Exception("account_not_linked");
                 success();
-            } catch (Exception ex) {
-                runOnUiThread(() -> busy(false, friendly(ex)));
-            }
+            } catch (Exception ex) { fail(ex); }
         });
     }
 
     private void signUpDoctor() {
-        String e = email.getText().toString().trim();
-        String p = password.getText().toString();
-        String c = str(clinicName).trim();
+        String e = str(email).trim(), p = str(password), c = str(clinicName).trim(), name = str(displayName).trim();
         if (!valid(e, p)) return;
-        if (c.length() < 2) { toast("اكتبي اسم العيادة"); return; }
-        busy(true, "جاري إنشاء حساب الدكتور…");
+        if (name.length() < 2) { displayName.setError("اكتبي اسم الدكتور"); return; }
+        if (c.length() < 2) { clinicName.setError("اكتبي اسم العيادة"); return; }
+        setBusy(true, "جاري إنشاء حساب الدكتور…");
         executor.execute(() -> {
             try {
                 SupabaseApi api = new SupabaseApi(this);
                 api.auth().setPendingClinicName(c);
                 boolean session = api.signUp(e, p);
                 if (session) {
-                    if (!api.createDoctorClinic(c, str(displayName))) throw new Exception("تعذر إنشاء العيادة");
+                    if (!api.createDoctorClinic(c, name)) throw new Exception("clinic_create_failed");
                     success();
                 } else {
-                    runOnUiThread(() -> busy(false, "تم إنشاء الحساب. أكدي البريد، وبعدها سجلي الدخول واكتبي اسم العيادة مرة واحدة."));
+                    runOnUiThread(() -> {
+                        setBusy(false, "");
+                        showStatus("تم إنشاء الحساب. أكدي البريد، وبعدها ارجعي لنفس قسم «عيادة جديدة» واضغطي إكمال إنشاء العيادة.", true, false);
+                    });
                 }
-            } catch (Exception ex) { runOnUiThread(() -> busy(false, friendly(ex))); }
+            } catch (Exception ex) { fail(ex); }
+        });
+    }
+
+    private void linkExistingOwner() {
+        String e = str(email).trim(), p = str(password), c = str(clinicName).trim(), name = str(displayName).trim();
+        if (!valid(e, p)) return;
+        if (name.length() < 2) { displayName.setError("اكتبي اسم الدكتور"); return; }
+        if (c.length() < 2) { clinicName.setError("اكتبي اسم العيادة"); return; }
+        setBusy(true, "جاري تسجيل الدخول وإنشاء العيادة…");
+        executor.execute(() -> {
+            try {
+                SupabaseApi api = new SupabaseApi(this);
+                api.signIn(e, p);
+                if (!api.resolveMembership() && !api.createDoctorClinic(c, name)) throw new Exception("clinic_create_failed");
+                success();
+            } catch (Exception ex) { fail(ex); }
         });
     }
 
     private void signUpInvitee() {
-        String e = email.getText().toString().trim();
-        String p = password.getText().toString();
-        String code = str(inviteCode).trim();
+        String e = str(email).trim(), p = str(password), code = str(inviteCode).trim(), name = str(displayName).trim();
         if (!valid(e, p)) return;
-        if (code.length() < 8) { toast("اكتبي رمز الدعوة من الدكتور"); return; }
-        busy(true, "جاري إنشاء الحساب وربطه بالعيادة…");
+        if (name.length() < 2) { displayName.setError("اكتبي اسمك"); return; }
+        if (code.length() < 8) { inviteCode.setError("اكتبي رمز الدعوة"); return; }
+        setBusy(true, "جاري إنشاء الحساب…");
         executor.execute(() -> {
             try {
                 SupabaseApi api = new SupabaseApi(this);
                 boolean session = api.signUp(e, p);
                 if (session) {
-                    if (!api.acceptInvite(code, str(displayName))) throw new Exception("تعذر قبول الدعوة");
+                    if (!api.acceptInvite(code, name)) throw new Exception("invite_invalid_or_expired");
                     success();
                 } else {
-                    runOnUiThread(() -> busy(false, "تم إنشاء الحساب. أكدي البريد، ثم سجلي الدخول بنفس رمز الدعوة."));
+                    runOnUiThread(() -> {
+                        setBusy(false, "");
+                        showStatus("تم إنشاء الحساب. أكدي البريد، وبعدها ارجعي لقسم «رمز دعوة» واضغطي ربط الحساب بالرمز.", true, false);
+                    });
                 }
-            } catch (Exception ex) { runOnUiThread(() -> busy(false, friendly(ex))); }
+            } catch (Exception ex) { fail(ex); }
+        });
+    }
+
+    private void linkExistingInvitee() {
+        String e = str(email).trim(), p = str(password), code = str(inviteCode).trim(), name = str(displayName).trim();
+        if (!valid(e, p)) return;
+        if (name.length() < 2) { displayName.setError("اكتبي اسمك"); return; }
+        if (code.length() < 8) { inviteCode.setError("اكتبي رمز الدعوة"); return; }
+        setBusy(true, "جاري ربط الحساب بالعيادة…");
+        executor.execute(() -> {
+            try {
+                SupabaseApi api = new SupabaseApi(this);
+                api.signIn(e, p);
+                if (!api.resolveMembership() && !api.acceptInvite(code, name)) throw new Exception("invite_invalid_or_expired");
+                success();
+            } catch (Exception ex) { fail(ex); }
         });
     }
 
     private void success() {
         runOnUiThread(() -> {
-            busy(false, "تم الربط ✓");
+            setBusy(false, "");
+            showStatus("تم الربط بالعيادة ✓", true, false);
             SyncCoordinator.kick(this);
             startActivity(new Intent(this, MainActivity.class));
             finish();
         });
     }
 
+    private void fail(Exception ex) {
+        runOnUiThread(() -> {
+            setBusy(false, "");
+            showStatus(friendly(ex), false, true);
+        });
+    }
+
     private boolean valid(String e, String p) {
-        if (!e.contains("@")) { toast("اكتبي بريد إلكتروني صحيح"); return false; }
-        if (p.length() < 6) { toast("كلمة المرور لازم تكون 6 أحرف أو أكثر"); return false; }
+        if (!e.contains("@") || e.startsWith("@") || e.endsWith("@")) { email.setError("اكتبي بريد إلكتروني صحيح"); return false; }
+        if (p.length() < 6) { password.setError("6 أحرف أو أكثر"); return false; }
         return true;
     }
 
-    private void busy(boolean value, String message) {
-        login.setEnabled(!value); doctorSignup.setEnabled(!value); joinSignup.setEnabled(!value);
-        float a = value ? 0.55f : 1f;
-        login.setAlpha(a); doctorSignup.setAlpha(a); joinSignup.setAlpha(a);
-        status.setText(message);
+    private void setBusy(boolean value, String message) {
+        busy = value;
+        primaryAction.setEnabled(!value);
+        secondaryAction.setEnabled(!value);
+        modeLogin.setEnabled(!value); modeOwner.setEnabled(!value); modeJoin.setEnabled(!value);
+        float alpha = value ? 0.55f : 1f;
+        primaryAction.setAlpha(alpha); secondaryAction.setAlpha(alpha);
+        if (value) showStatus(message, false, false);
+    }
+
+    private void clearStatus() {
+        if (status != null) { status.setText(""); status.setVisibility(View.GONE); }
+    }
+
+    private void showStatus(String message, boolean good, boolean bad) {
+        status.setText(message == null ? "" : message);
+        status.setTextColor(bad ? ClinicUi.ERROR : (good ? ClinicUi.PRIMARY : ClinicUi.MUTED));
+        int back = bad ? Color.rgb(252,239,239) : (good ? ClinicUi.SOFT : Color.rgb(240,243,244));
+        status.setBackground(ClinicUi.round(this, back, 13));
+        status.setVisibility(View.VISIBLE);
     }
 
     private String friendly(Exception e) {
-        String m = e.getMessage();
-        if (m == null || m.trim().isEmpty()) return "تعذر الاتصال بالشبكة";
+        String m = String.valueOf(e.getMessage());
         if (m.contains("Invalid login credentials")) return "البريد أو كلمة المرور غير صحيحة";
-        if (m.contains("Email not confirmed")) return "أكدي البريد الإلكتروني أولاً ثم سجلي الدخول";
-        if (m.contains("invite_invalid_or_expired") || m.contains("invalid_invite")) return "رمز الدعوة غير صحيح أو انتهت صلاحيته";
-        if (m.contains("duplicate") || m.contains("already registered")) return "الحساب موجود مسبقاً؛ استخدمي تسجيل الدخول";
-        if (m.contains("Network") || m.contains("Unable") || m.contains("timed out") || m.contains("HTTP 0")) return "الشبكة غير متاحة حالياً";
+        if (m.contains("Email not confirmed")) return "أكدي البريد الإلكتروني أولاً ثم حاولي مرة تانية";
+        if (m.contains("invite_invalid_or_expired") || m.contains("invalid_invite")) return "رمز الدعوة غير صحيح أو انتهت صلاحيته أو استُخدم بالكامل";
+        if (m.contains("already registered") || m.contains("User already registered") || m.contains("duplicate")) return "الحساب موجود مسبقاً؛ استخدمي زر ربط الحساب الموجود";
+        if (m.contains("account_not_linked")) return "الحساب صحيح لكنه غير مربوط بعيادة. اختاري «عيادة جديدة» أو «رمز دعوة» حسب حسابك.";
+        if (m.contains("clinic_create_failed")) return "تعذر إنشاء العيادة. تأكدي إن الحساب ما مربوط بعيادة أخرى.";
+        if (m.contains("Network") || m.contains("Unable") || m.contains("timed out") || m.contains("HTTP 0") || m.contains("Failed to connect")) return "الشبكة غير متاحة حالياً. البيانات المحلية ما بتتأثر.";
+        if (m == null || m.trim().isEmpty() || "null".equals(m)) return "تعذر إكمال العملية";
         return m;
     }
 
-    private String str(EditText e) { return e.getText().toString(); }
-
-    private EditText field(String hint) {
-        EditText e = new EditText(this);
-        e.setHint(hint); e.setTextSize(15); e.setTextColor(ink); e.setHintTextColor(muted);
-        e.setSingleLine(true); e.setPadding(dp(14), dp(12), dp(14), dp(12)); e.setBackgroundColor(Color.WHITE); e.setMinHeight(dp(52));
-        return e;
-    }
-
-    private TextView button(String label, boolean solid) {
-        TextView t = text(label, 15, solid ? Color.WHITE : primary, true);
-        t.setGravity(Gravity.CENTER); t.setPadding(dp(12), dp(14), dp(12), dp(14));
-        t.setBackgroundColor(solid ? primary : Color.WHITE); t.setMinHeight(dp(52));
-        t.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return t;
-    }
-
-    private TextView text(String value, int sp, int color, boolean bold) {
-        TextView t = new TextView(this); t.setText(value); t.setTextSize(sp); t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return t;
-    }
-
-    private View space(int h) { View v = new View(this); v.setLayoutParams(new LinearLayout.LayoutParams(1, dp(h))); return v; }
+    private String str(EditText e) { return e.getText() == null ? "" : e.getText().toString(); }
+    private int dp(int v) { return ClinicUi.dp(this, v); }
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
-    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+    @Override protected void onDestroy() {
+        executor.shutdownNow();
+        super.onDestroy();
+    }
 }
