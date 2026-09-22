@@ -152,7 +152,7 @@ public class BillingActivity extends Activity {
         Spinner s = new Spinner(this);
         s.setAdapter(new ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, items));
         s.setPadding(dp(10), dp(7), dp(10), dp(7));
-        s.setMinHeight(dp(52));
+        s.setMinimumHeight(dp(52));
         s.setBackground(ClinicUi.stroke(this, ClinicUi.SURFACE, ClinicUi.LINE, 14));
         return s;
     }
