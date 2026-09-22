@@ -2,6 +2,7 @@ package com.eman.clinic;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -57,6 +58,11 @@ public class MainActivity extends Activity {
         role = prefs.getString("role", ROLE_RECEPTION);
         showHome();
         if (!prefs.contains("role_chosen") && !auth.hasRemoteIdentity()) selectRoleDialog(true);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (prefs != null) role = prefs.getString("role", role == null ? ROLE_RECEPTION : role);
     }
 
     private void base(String title, String subtitle, int selectedNav) {
@@ -131,6 +137,16 @@ public class MainActivity extends Activity {
         content.addView(space(10));
         content.addView(statRow("المحصّل اليوم", money(s.totalPaid), "متبقي زيارات اليوم", money(s.outstanding)));
         content.addView(space(12));
+
+        if (auth.hasRemoteIdentity()) {
+            LinearLayout sync = card();
+            int pending = new SyncStore(this).pendingCount();
+            sync.addView(tv(pending == 0 ? "المزامنة محدثة ✓" : "بانتظار المزامنة: " + pending, 15, pending == 0 ? primary : warning, true));
+            sync.addView(tv(LocalSyncManager.status(this), 12, muted, false));
+            sync.setOnClickListener(v -> startActivity(new Intent(this, LocalSyncActivity.class)));
+            content.addView(sync);
+        }
+
         if (db.isOperationalDayClosed()) {
             LinearLayout locked = card();
             locked.addView(tv("تم إغلاق حساب اليوم ✓", 16, primary, true));
@@ -151,7 +167,7 @@ public class MainActivity extends Activity {
             section("الإدارة", "متابعة التشغيل والتحصيل وإعدادات العيادة");
             content.addView(primaryButton("الحسابات وإغلاق اليوم", v -> showFinance()));
             content.addView(space(8));
-            content.addView(secondaryButton("إعدادات العيادة", v -> showSettings()));
+            content.addView(secondaryButton("إعدادات وأدوات العيادة", v -> showSettings()));
         }
 
         content.addView(space(18));
@@ -163,7 +179,7 @@ public class MainActivity extends Activity {
             for (int i = 0; i < max; i++) content.addView(queueCard(q.get(i), false));
         }
         content.addView(space(8));
-        TextView settings = link("الإعدادات");
+        TextView settings = link("الإعدادات والأدوات");
         settings.setOnClickListener(v -> showSettings());
         content.addView(settings);
     }
@@ -356,14 +372,20 @@ public class MainActivity extends Activity {
         TextView close = closed ? secondaryButton("اليوم مقفول ✓", v -> toast("تم إغلاق اليوم مسبقاً")) : primaryButton("إغلاق حساب اليوم", v -> {
             ClinicDb.Stats latest = db.todayStats();
             if (latest.openQueue > 0) { toast("أكملي كل الحالات المفتوحة قبل إغلاق اليوم"); return; }
-            if (db.closeToday()) { toast("تم حفظ إغلاق اليوم"); showFinance(); }
-            else toast("تعذر الإغلاق أو اليوم مقفول مسبقاً");
+            new AlertDialog.Builder(this)
+                    .setTitle("إغلاق حساب اليوم؟")
+                    .setMessage("المقبوض اليوم: " + money(latest.totalPaid) + "\nمتبقي زيارات اليوم: " + money(latest.outstanding) + "\n\nبعد الإغلاق ما حتقدري تضيفي زيارة أو دفعة جديدة لليوم.")
+                    .setNegativeButton("رجوع", null)
+                    .setPositiveButton("إغلاق اليوم", (d,w) -> {
+                        if (db.closeToday()) { toast("تم حفظ إغلاق اليوم"); showFinance(); }
+                        else toast("تعذر الإغلاق أو اليوم مقفول مسبقاً");
+                    }).show();
         });
         content.addView(close);
     }
 
     private void showSettings() {
-        base("إعدادات العيادة", "إعدادات هذا الجهاز", -1);
+        base("إعدادات وأدوات العيادة", "الإعدادات، الفريق، المزامنة والنسخ الاحتياطي", -1);
         EditText clinic = field("اسم العيادة", false); clinic.setText(prefs.getString("clinic_name", "العيادة"));
         EditText fee = field("رسوم الكشف", false); fee.setInputType(InputType.TYPE_CLASS_NUMBER); fee.setText(String.valueOf(prefs.getInt("visit_fee", 10000)));
         EditText resultFee = field("رسوم نتيجة الفحوصات", false); resultFee.setInputType(InputType.TYPE_CLASS_NUMBER); resultFee.setText(String.valueOf(prefs.getInt("result_fee", 0)));
@@ -373,10 +395,18 @@ public class MainActivity extends Activity {
         content.addView(labeled("رسوم إحضار نتيجة فحوصات", resultFee));
         content.addView(labeled("المقابلة المجانية", days));
         content.addView(primaryButton("حفظ الإعدادات", v -> {
-            prefs.edit().putString("clinic_name", str(clinic).trim())
-                    .putInt("visit_fee", intValue(fee, 10000))
-                    .putInt("result_fee", intValue(resultFee, 0))
-                    .putInt("followup_days", Math.max(1, intValue(days, 7))).apply();
+            String clinicValue = str(clinic).trim();
+            int feeValue = intValue(fee, 10000);
+            int resultValue = intValue(resultFee, 0);
+            int followValue = intValue(days, 7);
+            if (clinicValue.length() < 2) { clinic.setError("اكتبي اسم العيادة"); return; }
+            if (feeValue < 0) { fee.setError("الرسوم ما ممكن تكون سالبة"); return; }
+            if (resultValue < 0) { resultFee.setError("الرسوم ما ممكن تكون سالبة"); return; }
+            if (followValue < 1 || followValue > 90) { days.setError("من يوم إلى 90 يوم"); return; }
+            prefs.edit().putString("clinic_name", clinicValue)
+                    .putInt("visit_fee", feeValue)
+                    .putInt("result_fee", resultValue)
+                    .putInt("followup_days", followValue).apply();
             toast("تم حفظ الإعدادات"); showHome();
         }));
         content.addView(space(10));
@@ -385,11 +415,42 @@ public class MainActivity extends Activity {
         } else {
             content.addView(secondaryButton("تغيير دور الجهاز: " + roleLabel(role), v -> selectRoleDialog(false)));
         }
+
+        content.addView(space(20));
+        section("أدوات العيادة", "كل أدوات الإدارة من مكان واحد");
+        if (auth.hasRemoteIdentity()) {
+            content.addView(toolCard("ربط ومزامنة الأجهزة", LocalSyncManager.status(this), v -> startActivity(new Intent(this, LocalSyncActivity.class))));
+            if (auth.can("manage_staff")) {
+                content.addView(toolCard("فريق العيادة والصلاحيات", "دعوة المسجلة والدكتور البديل وتحديد صلاحياتهم", v -> startActivity(new Intent(this, StaffActivity.class))));
+            }
+            if ("owner_doctor".equals(auth.memberRole())) {
+                content.addView(toolCard("النسخ الاحتياطي والاسترجاع", "إنشاء نسخة مشفّرة أو استرجاع نسخة سابقة", v -> startActivity(new Intent(this, BackupActivity.class))));
+                content.addView(toolCard("الاشتراك والدفع", "إرسال بيانات الدفع ومتابعة حالة الاشتراك", v -> startActivity(new Intent(this, BillingActivity.class))));
+            }
+            content.addView(secondaryButton("مزامنة الآن", v -> {
+                SyncCoordinator.kick(this);
+                LocalSyncManager.kick(this);
+                toast("بدأت المزامنة");
+            }));
+        }
+
         content.addView(space(20));
         LinearLayout info = card();
         info.addView(tv("وضع العمل", 16, ink, true));
         info.addView(tv("البيانات محفوظة محلياً على الجهاز وتستمر بعد إغلاق التطبيق.", 13, muted, false));
+        info.addView(tv("الإصدار " + BuildConfig.VERSION_NAME, 12, muted, false));
         content.addView(info);
+    }
+
+    private View toolCard(String title, String subtitle, View.OnClickListener click) {
+        LinearLayout c = card();
+        c.addView(tv(title, 16, ink, true));
+        c.addView(tv(subtitle, 12, muted, false));
+        TextView open = link("فتح ←");
+        open.setOnClickListener(click);
+        c.setOnClickListener(click);
+        c.addView(open);
+        return c;
     }
 
     private void newPatientDialog() {
@@ -474,6 +535,7 @@ public class MainActivity extends Activity {
                 .setNegativeButton("إلغاء", null)
                 .setPositiveButton("حفظ", (d, w) -> {
                     int a = intValue(amount, 0);
+                    if (a <= 0) { toast("اكتبي مبلغ صحيح"); return; }
                     if (a > visit.remaining()) { toast("المبلغ أكبر من المتبقي"); return; }
                     if (db.recordPayment(visit.id, a, String.valueOf(method.getSelectedItem()))) { toast("تم تسجيل الدفعة"); showFinance(); }
                     else toast("المبلغ غير صحيح أو اليوم مقفول");
