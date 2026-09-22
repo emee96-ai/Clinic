@@ -8,6 +8,8 @@
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config"
+        android:icon="@drawable/ic_clinic"
+        android:roundIcon="@drawable/ic_clinic"
         android:label="العيادة"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
