@@ -15,6 +15,7 @@
         <activity android:name=".BillingActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".StaffActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".LocalSyncActivity" android:screenOrientation="portrait" android:exported="false" />
+        <activity android:name=".BackupActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity
             android:name=".LauncherActivity"
             android:screenOrientation="portrait"
@@ -41,6 +42,17 @@
             android:enabled="true"
             android:exported="true"
             android:label="ربط أجهزة العيادة">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".BackupLauncher"
+            android:targetActivity=".BackupActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:label="نسخ العيادة الاحتياطي">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
