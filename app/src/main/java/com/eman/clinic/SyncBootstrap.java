@@ -1,6 +1,7 @@
 package com.eman.clinic;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 
 /** Installs database-level change tracking without touching the clinic workflow code. */
@@ -17,6 +18,8 @@ public final class SyncBootstrap {
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(entity_type, local_id))");
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)");
 
+                boolean initialSeed = !metaEquals(db, "sync_tracking_seeded", "1");
+
                 String[] triggers = {
                         "trg_sync_patients_insert", "trg_sync_patients_update",
                         "trg_sync_visits_insert", "trg_sync_visits_update",
@@ -31,10 +34,18 @@ public final class SyncBootstrap {
                 createTrackingTriggers(db, "payments", "payment", trackingWhen);
                 createTrackingTriggers(db, "day_closures", "day_closure", trackingWhen);
 
-                seedExisting(db, "patients", "patient");
-                seedExisting(db, "visits", "visit");
-                seedExisting(db, "payments", "payment");
-                seedExisting(db, "day_closures", "day_closure");
+                ensureKeys(db, "patients", "patient");
+                ensureKeys(db, "visits", "visit");
+                ensureKeys(db, "payments", "payment");
+                ensureKeys(db, "day_closures", "day_closure");
+
+                if (initialSeed) {
+                    markExistingDirty(db, "patients", "patient");
+                    markExistingDirty(db, "visits", "visit");
+                    markExistingDirty(db, "payments", "payment");
+                    markExistingDirty(db, "day_closures", "day_closure");
+                    db.execSQL("INSERT OR REPLACE INTO sync_meta(meta_key,meta_value) VALUES('sync_tracking_seeded','1')");
+                }
 
                 db.setTransactionSuccessful();
             } finally {
@@ -60,8 +71,17 @@ public final class SyncBootstrap {
                 "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('" + entity + "',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
     }
 
-    private static void seedExisting(SQLiteDatabase db, String table, String entity) {
+    private static void ensureKeys(SQLiteDatabase db, String table, String entity) {
         db.execSQL("INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT '" + entity + "',id,lower(hex(randomblob(16))) FROM " + table);
+    }
+
+    private static void markExistingDirty(SQLiteDatabase db, String table, String entity) {
         db.execSQL("INSERT OR IGNORE INTO sync_dirty(entity_type,local_id,changed_at) SELECT '" + entity + "',id,STRFTIME('%Y-%m-%d %H:%M:%f','now') FROM " + table);
+    }
+
+    private static boolean metaEquals(SQLiteDatabase db, String key, String expected) {
+        Cursor c = db.rawQuery("SELECT meta_value FROM sync_meta WHERE meta_key=?", new String[]{key});
+        try { return c.moveToFirst() && expected.equals(c.getString(0)); }
+        finally { c.close(); }
     }
 }
