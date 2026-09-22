@@ -25,38 +25,5 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity-alias
-            android:name=".TeamLauncher"
-            android:targetActivity=".StaffActivity"
-            android:enabled="false"
-            android:exported="true"
-            android:label="فريق العيادة">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-        <activity-alias
-            android:name=".LocalSyncLauncher"
-            android:targetActivity=".LocalSyncActivity"
-            android:enabled="true"
-            android:exported="true"
-            android:label="ربط أجهزة العيادة">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
-        <activity-alias
-            android:name=".BackupLauncher"
-            android:targetActivity=".BackupActivity"
-            android:enabled="true"
-            android:exported="true"
-            android:label="نسخ العيادة الاحتياطي">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity-alias>
     </application>
 </manifest>
