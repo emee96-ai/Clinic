@@ -7,10 +7,10 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.text.InputType;
-import android.view.Gravity;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -29,9 +29,6 @@ public final class BackupActivity extends Activity {
     private static final int OPEN_BACKUP = 8102;
     private static final int MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 
-    private final int primary = Color.rgb(14, 113, 105);
-    private final int ink = Color.rgb(24, 35, 39);
-    private final int muted = Color.rgb(103, 116, 121);
     private TextView status;
     private char[] pendingBackupPassword;
     private Uri pendingRestoreUri;
@@ -39,9 +36,11 @@ public final class BackupActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().getDecorView().setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        getWindow().setStatusBarColor(Color.WHITE);
+        getWindow().setNavigationBarColor(Color.WHITE);
         AuthStore auth = new AuthStore(this);
         if (auth.hasRemoteIdentity() && !"owner_doctor".equals(auth.memberRole())) {
-            Toast.makeText(this, "النسخ الاحتياطي متاح لمالك العيادة فقط", Toast.LENGTH_LONG).show();
+            Toast.makeText(this,"النسخ الاحتياطي متاح لمالك العيادة فقط",Toast.LENGTH_LONG).show();
             finish();
             return;
         }
@@ -49,53 +48,63 @@ public final class BackupActivity extends Activity {
     }
 
     private void render() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(24), dp(22), dp(24));
-        root.setBackgroundColor(Color.rgb(245, 247, 248));
+        root.setPadding(dp(20),dp(26),dp(20),dp(28));
+        root.setBackgroundColor(ClinicUi.BG);
+        scroll.addView(root);
 
-        root.addView(text("النسخ الاحتياطي والاسترجاع", 26, ink, true));
-        TextView sub = text("انسخي بيانات العيادة في ملف مشفّر بكلمة مرور، أو استرجعي نسخة سابقة على هذا الجهاز.", 14, muted, false);
-        sub.setPadding(0, dp(6), 0, dp(20));
-        root.addView(sub);
+        root.addView(ClinicUi.text(this,"النسخ الاحتياطي",27,ClinicUi.INK,true));
+        TextView sub = ClinicUi.text(this,"احفظي نسخة مشفّرة من بيانات العيادة في مكان تختاريه، أو استرجعي نسخة سابقة على هذا الجهاز.",14,ClinicUi.MUTED,false);
+        sub.setPadding(0,dp(5),0,dp(16)); root.addView(sub);
 
-        LinearLayout warning = card();
-        warning.addView(text("مهم", 17, ink, true));
-        warning.addView(text("كلمة مرور النسخة لا يمكن استرجاعها إذا نُسيت. الملف لا يحتوي كلمات مرور الحساب أو توكنات الدخول أو أسرار ربط الأجهزة.", 14, muted, false));
-        root.addView(warning);
+        LinearLayout safety = ClinicUi.card(this);
+        safety.addView(ClinicUi.text(this,"النسخة محمية بكلمة مرور",17,ClinicUi.INK,true));
+        safety.addView(ClinicUi.text(this,"الملف لا يحتوي كلمة مرور الحساب أو توكنات الدخول أو سر ربط الأجهزة. كلمة مرور النسخة نفسها لا يمكن استرجاعها إذا نُسيت.",13,ClinicUi.MUTED,false));
+        root.addView(safety);
 
-        TextView backup = button("إنشاء نسخة احتياطية مشفّرة");
+        TextView backup = ClinicUi.button(this,"إنشاء نسخة احتياطية مشفّرة",true);
         backup.setOnClickListener(v -> askBackupPassword());
         root.addView(backup);
+        root.addView(ClinicUi.space(this,9));
 
-        TextView restore = secondaryButton("استرجاع نسخة احتياطية");
+        TextView restore = ClinicUi.button(this,"استرجاع نسخة احتياطية",false);
         restore.setOnClickListener(v -> chooseRestoreFile());
-        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, dp(52));
-        rp.setMargins(0, dp(10), 0, 0);
-        restore.setLayoutParams(rp);
         root.addView(restore);
+        root.addView(ClinicUi.space(this,9));
 
-        status = text("", 14, muted, false);
-        status.setPadding(0, dp(18), 0, 0);
+        TextView back = ClinicUi.softButton(this,"رجوع");
+        back.setOnClickListener(v -> finish());
+        root.addView(back);
+        root.addView(ClinicUi.space(this,14));
+
+        status = ClinicUi.status(this,"",false,false);
+        status.setVisibility(View.GONE);
         root.addView(status);
+        root.addView(ClinicUi.space(this,16));
 
-        setContentView(root);
+        LinearLayout restoreNote = ClinicUi.card(this);
+        restoreNote.addView(ClinicUi.text(this,"قبل الاسترجاع",16,ClinicUi.INK,true));
+        restoreNote.addView(ClinicUi.text(this,"الاسترجاع يستبدل البيانات المحلية الموجودة على هذا الجهاز. بيانات Supabase لا تُحذف، وبعد الاسترجاع ترجع المزامنة تكمل تلقائياً.",13,ClinicUi.MUTED,false));
+        root.addView(restoreNote);
+
+        setContentView(scroll);
     }
 
     private void askBackupPassword() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), 0, dp(20), 0);
+        LinearLayout box = dialogBox();
         EditText p1 = passwordField("كلمة مرور النسخة — 8 أحرف على الأقل");
         EditText p2 = passwordField("أعيدي كلمة المرور");
-        box.addView(p1);
-        box.addView(p2);
+        box.addView(ClinicUi.labeled(this,"كلمة المرور",p1));
+        box.addView(ClinicUi.labeled(this,"التأكيد",p2));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("حماية النسخة")
                 .setView(box)
-                .setNegativeButton("إلغاء", null)
-                .setPositiveButton("اختيار مكان الحفظ", null)
+                .setNegativeButton("إلغاء",null)
+                .setPositiveButton("اختيار مكان الحفظ",null)
                 .create();
         dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String one = p1.getText().toString();
@@ -109,8 +118,8 @@ public final class BackupActivity extends Activity {
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType("application/octet-stream");
-            intent.putExtra(Intent.EXTRA_TITLE, backupFileName());
-            startActivityForResult(intent, CREATE_BACKUP);
+            intent.putExtra(Intent.EXTRA_TITLE,backupFileName());
+            startActivityForResult(intent,CREATE_BACKUP);
         }));
         dialog.show();
     }
@@ -119,11 +128,11 @@ public final class BackupActivity extends Activity {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        startActivityForResult(intent, OPEN_BACKUP);
+        startActivityForResult(intent,OPEN_BACKUP);
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
+        super.onActivityResult(requestCode,resultCode,data);
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             if (requestCode == CREATE_BACKUP) clearPendingPassword();
             return;
@@ -139,38 +148,35 @@ public final class BackupActivity extends Activity {
         final char[] password = pendingBackupPassword;
         pendingBackupPassword = null;
         if (password == null) return;
-        setStatus("جاري إنشاء النسخة…");
+        showStatus("جاري إنشاء النسخة…",false,false);
         new Thread(() -> {
             try {
                 String encrypted = new ClinicBackupManager(this).createEncryptedBackup(password);
-                try (OutputStream out = getContentResolver().openOutputStream(uri, "w")) {
+                try (OutputStream out = getContentResolver().openOutputStream(uri,"w")) {
                     if (out == null) throw new IllegalStateException("cannot_open_backup_file");
                     out.write(encrypted.getBytes(StandardCharsets.UTF_8));
                     out.flush();
                 }
-                runOnUiThread(() -> setStatus("تم حفظ النسخة الاحتياطية بنجاح ✓"));
+                runOnUiThread(() -> showStatus("تم حفظ النسخة الاحتياطية بنجاح ✓",true,false));
             } catch (Exception e) {
-                runOnUiThread(() -> setStatus("تعذر إنشاء النسخة: " + friendly(e)));
-            } finally {
-                Arrays.fill(password, '\0');
-            }
-        }, "clinic-backup-write").start();
+                runOnUiThread(() -> showStatus("تعذر إنشاء النسخة: "+friendly(e),false,true));
+            } finally { Arrays.fill(password,'\0'); }
+        },"clinic-backup-write").start();
     }
 
     private void askRestorePassword() {
         if (pendingRestoreUri == null) return;
         EditText password = passwordField("كلمة مرور النسخة");
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), 0, dp(20), 0);
-        box.addView(text("الاسترجاع سيستبدل البيانات المحلية الموجودة على هذا الجهاز. بيانات Supabase لا تُحذف.", 14, muted, false));
+        LinearLayout box = dialogBox();
+        box.addView(ClinicUi.text(this,"سيتم التحقق من سلامة الملف والعيادة قبل لمس البيانات المحلية.",13,ClinicUi.MUTED,false));
+        box.addView(ClinicUi.space(this,8));
         box.addView(password);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("تأكيد الاسترجاع")
                 .setView(box)
-                .setNegativeButton("إلغاء", (d, w) -> pendingRestoreUri = null)
-                .setPositiveButton("استرجاع", null)
+                .setNegativeButton("إلغاء",(d,w)->pendingRestoreUri=null)
+                .setPositiveButton("استرجاع",null)
                 .create();
         dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String p = password.getText().toString();
@@ -180,39 +186,36 @@ public final class BackupActivity extends Activity {
             char[] chars = p.toCharArray();
             password.setText("");
             dialog.dismiss();
-            restore(uri, chars);
+            restore(uri,chars);
         }));
         dialog.show();
     }
 
     private void restore(Uri uri, char[] password) {
-        setStatus("جاري التحقق من النسخة واسترجاعها…");
+        showStatus("جاري التحقق من النسخة واسترجاعها…",false,false);
         new Thread(() -> {
             try {
                 String envelope = readLimited(uri);
-                ClinicBackupManager.RestoreSummary s = new ClinicBackupManager(this).restoreEncryptedBackup(envelope, password);
+                ClinicBackupManager.RestoreSummary s = new ClinicBackupManager(this).restoreEncryptedBackup(envelope,password);
                 SyncCoordinator.kick(this);
-                String message = "تم الاسترجاع ✓  المرضى: " + s.patients + " • الزيارات: " + s.visits +
-                        " • الدفعات: " + s.payments + (s.pendingSync > 0 ? " • بانتظار المزامنة: " + s.pendingSync : "");
-                runOnUiThread(() -> setStatus(message));
+                String message = "تم الاسترجاع ✓\nالمرضى: "+s.patients+" • الزيارات: "+s.visits+" • الدفعات: "+s.payments+
+                        (s.pendingSync > 0?"\nبانتظار المزامنة: "+s.pendingSync:"");
+                runOnUiThread(() -> showStatus(message,true,false));
             } catch (Exception e) {
-                runOnUiThread(() -> setStatus("تعذر الاسترجاع: " + friendly(e)));
-            } finally {
-                Arrays.fill(password, '\0');
-            }
-        }, "clinic-backup-restore").start();
+                runOnUiThread(() -> showStatus("تعذر الاسترجاع: "+friendly(e),false,true));
+            } finally { Arrays.fill(password,'\0'); }
+        },"clinic-backup-restore").start();
     }
 
     private String readLimited(Uri uri) throws Exception {
-        try (InputStream in = getContentResolver().openInputStream(uri);
-             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+        try (InputStream in = getContentResolver().openInputStream(uri); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             if (in == null) throw new IllegalStateException("cannot_open_backup_file");
             byte[] buffer = new byte[8192];
-            int total = 0, n;
-            while ((n = in.read(buffer)) != -1) {
+            int total=0,n;
+            while ((n=in.read(buffer))!=-1) {
                 total += n;
                 if (total > MAX_BACKUP_BYTES) throw new IllegalStateException("backup_too_large");
-                out.write(buffer, 0, n);
+                out.write(buffer,0,n);
             }
             return out.toString(StandardCharsets.UTF_8.name());
         }
@@ -224,64 +227,38 @@ public final class BackupActivity extends Activity {
         if (m.contains("backup_belongs_to_another_clinic")) return "النسخة تخص عيادة أخرى";
         if (m.contains("unsupported_backup_format") || m.contains("invalid_backup")) return "الملف ليس نسخة Clinic صالحة";
         if (m.contains("backup_too_large")) return "حجم ملف النسخة أكبر من الحد المسموح";
+        if (m.contains("cannot_open_backup_file")) return "تعذر فتح الملف المختار";
         return "حدث خطأ أثناء العملية";
     }
 
-    private void setStatus(String value) { if (status != null) status.setText(value == null ? "" : value); }
+    private void showStatus(String value, boolean good, boolean bad) {
+        status.setText(value == null?"":value);
+        status.setTextColor(bad?ClinicUi.ERROR:(good?ClinicUi.PRIMARY:ClinicUi.MUTED));
+        int back = bad?Color.rgb(252,239,239):(good?ClinicUi.SOFT:Color.rgb(240,243,244));
+        status.setBackground(ClinicUi.round(this,back,13));
+        status.setVisibility(value == null || value.isEmpty()?View.GONE:View.VISIBLE);
+    }
 
     private EditText passwordField(String hint) {
-        EditText e = new EditText(this);
-        e.setHint(hint);
-        e.setSingleLine(true);
+        EditText e = ClinicUi.field(this,hint);
         e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        e.setPadding(dp(12), dp(11), dp(12), dp(11));
         return e;
     }
 
-    private TextView button(String value) {
-        TextView t = text(value, 15, Color.WHITE, true);
-        t.setGravity(Gravity.CENTER);
-        t.setBackgroundColor(primary);
-        t.setMinHeight(dp(52));
-        return t;
-    }
-
-    private TextView secondaryButton(String value) {
-        TextView t = text(value, 15, primary, true);
-        t.setGravity(Gravity.CENTER);
-        t.setBackgroundColor(Color.rgb(232, 246, 244));
-        t.setMinHeight(dp(52));
-        return t;
-    }
-
-    private LinearLayout card() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setPadding(dp(16), dp(14), dp(16), dp(14));
-        c.setBackgroundColor(Color.WHITE);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-        p.setMargins(0, 0, 0, dp(18));
-        c.setLayoutParams(p);
-        return c;
-    }
-
-    private TextView text(String value, int size, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value);
-        t.setTextSize(size);
-        t.setTextColor(color);
-        t.setGravity(Gravity.RIGHT);
-        if (bold) t.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
-        return t;
+    private LinearLayout dialogBox() {
+        LinearLayout b = new LinearLayout(this);
+        b.setOrientation(LinearLayout.VERTICAL);
+        b.setPadding(dp(18),dp(8),dp(18),0);
+        return b;
     }
 
     private String backupFileName() {
-        String when = new SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new Date());
-        return "clinic-backup-" + when + ".clinicbak";
+        String when = new SimpleDateFormat("yyyyMMdd-HHmm",Locale.US).format(new Date());
+        return "clinic-backup-"+when+".clinicbak";
     }
 
     private void clearPendingPassword() {
-        if (pendingBackupPassword != null) Arrays.fill(pendingBackupPassword, '\0');
+        if (pendingBackupPassword != null) Arrays.fill(pendingBackupPassword,'\0');
         pendingBackupPassword = null;
     }
 
@@ -290,5 +267,5 @@ public final class BackupActivity extends Activity {
         super.onDestroy();
     }
 
-    private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private int dp(int v){ return ClinicUi.dp(this,v); }
 }
