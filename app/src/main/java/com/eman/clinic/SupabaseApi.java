@@ -186,7 +186,7 @@ public final class SupabaseApi {
     private void refreshEntitlementQuietly() { try { refreshEntitlement(); } catch (Exception ignored) {} }
 
     public boolean upsertPatient(String clinicId, String deviceId, JSONObject local) throws Exception {
-        if (!auth.can("edit_patients")) return false;
+        if (!(auth.can("edit_patients") || auth.can("edit_clinical"))) return false;
         JSONObject body = new JSONObject(local.toString());
         body.put("clinic_id", clinicId);
         body.put("source_device_id", deviceId);
@@ -264,7 +264,7 @@ public final class SupabaseApi {
 
     public JSONArray pullPatients(String clinicId, String cursor) throws Exception {
         if (!auth.can("view_patients")) return new JSONArray();
-        String path = "/rest/v1/patients?select=sync_key,card_no,full_name,phone,gender,created_at,updated_at&clinic_id=eq." + enc(clinicId)
+        String path = "/rest/v1/patients?select=sync_key,card_no,full_name,phone,gender,age_text,allergies,chronic_conditions,current_medications,created_at,updated_at&clinic_id=eq." + enc(clinicId)
                 + cursorFilter(cursor) + "&order=updated_at.asc&limit=1000";
         return getArray(path);
     }
