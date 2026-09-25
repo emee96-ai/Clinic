@@ -16,6 +16,12 @@ public final class AuthStore {
     public AuthStore(Context context) {
         this.context = context.getApplicationContext();
         prefs = this.context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        if ("owner_doctor".equals(prefs.getString("member_role", ""))) {
+            this.context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
+                    .putString("role", "DOCTOR")
+                    .putBoolean("role_chosen", true)
+                    .apply();
+        }
     }
 
     public void saveSession(String accessToken, String refreshToken, String userId) {
