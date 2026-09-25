@@ -54,18 +54,22 @@ public class SyncStore {
     private SyncItem patientItem(long id, String changedAt) {
         SQLiteDatabase db = helper.getReadableDatabase();
         Cursor c = db.rawQuery(
-                "SELECT p.id,p.card_no,p.full_name,p.phone,p.gender,p.created_at,k.sync_key FROM patients p JOIN sync_entity_keys k ON k.entity_type='patient' AND k.local_id=p.id WHERE p.id=?",
+                "SELECT p.id,p.card_no,p.full_name,p.phone,p.gender,p.age_text,p.allergies,p.chronic_conditions,p.current_medications,p.created_at,k.sync_key FROM patients p JOIN sync_entity_keys k ON k.entity_type='patient' AND k.local_id=p.id WHERE p.id=?",
                 new String[]{String.valueOf(id)});
         if (!c.moveToFirst()) { c.close(); return null; }
         try {
             JSONObject json = new JSONObject();
-            json.put("sync_key", c.getString(6));
+            json.put("sync_key", c.getString(10));
             json.put("card_no", c.getInt(1));
             json.put("full_name", safe(c.getString(2)));
             json.put("phone", safe(c.getString(3)));
             json.put("gender", safe(c.getString(4)));
-            json.put("created_at", safe(c.getString(5)));
-            SyncItem item = new SyncItem("patient", id, c.getString(6), changedAt, json.toString());
+            json.put("age_text", safe(c.getString(5)));
+            json.put("allergies", safe(c.getString(6)));
+            json.put("chronic_conditions", safe(c.getString(7)));
+            json.put("current_medications", safe(c.getString(8)));
+            json.put("created_at", safe(c.getString(9)));
+            SyncItem item = new SyncItem("patient", id, c.getString(10), changedAt, json.toString());
             c.close();
             return item;
         } catch (JSONException e) { c.close(); return null; }
@@ -202,6 +206,10 @@ public class SyncStore {
             v.put("full_name", row.optString("full_name", ""));
             v.put("phone", row.optString("phone", ""));
             v.put("gender", row.optString("gender", ""));
+            v.put("age_text", row.optString("age_text", ""));
+            v.put("allergies", row.optString("allergies", ""));
+            v.put("chronic_conditions", row.optString("chronic_conditions", ""));
+            v.put("current_medications", row.optString("current_medications", ""));
             v.put("created_at", normalizeTime(row.optString("created_at", "")));
             SQLiteDatabase db = helper.getWritableDatabase();
             long id;
