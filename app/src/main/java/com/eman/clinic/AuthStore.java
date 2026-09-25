@@ -44,8 +44,7 @@ public final class AuthStore {
                 .apply();
 
         String localRole = "RECEPTION";
-        if ("substitute_doctor".equals(role)) localRole = "DOCTOR";
-        else if ("owner_doctor".equals(role)) localRole = "ADMIN";
+        if ("substitute_doctor".equals(role) || "owner_doctor".equals(role)) localRole = "DOCTOR";
         context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
                 .putString("role", localRole)
                 .putBoolean("role_chosen", true)
