@@ -186,12 +186,27 @@ public final class SupabaseApi {
     private void refreshEntitlementQuietly() { try { refreshEntitlement(); } catch (Exception ignored) {} }
 
     public boolean upsertPatient(String clinicId, String deviceId, JSONObject local) throws Exception {
-        if (!(auth.can("edit_patients") || auth.can("edit_clinical"))) return false;
-        JSONObject body = new JSONObject(local.toString());
-        body.put("clinic_id", clinicId);
-        body.put("source_device_id", deviceId);
-        Response r = request("POST", "/rest/v1/patients?on_conflict=clinic_id,sync_key", body.toString(), "resolution=merge-duplicates,return=minimal");
-        return ok(r);
+        if (auth.can("edit_patients")) {
+            JSONObject body = new JSONObject(local.toString());
+            body.put("clinic_id", clinicId);
+            body.put("source_device_id", deviceId);
+            Response r = request("POST", "/rest/v1/patients?on_conflict=clinic_id,sync_key", body.toString(), "resolution=merge-duplicates,return=minimal");
+            return ok(r);
+        }
+        if (auth.can("edit_clinical")) return updatePatientMedicalSummary(clinicId, local);
+        return false;
+    }
+
+    private boolean updatePatientMedicalSummary(String clinicId, JSONObject local) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("p_clinic_id", clinicId);
+        body.put("p_sync_key", local.optString("sync_key", ""));
+        body.put("p_age_text", local.optString("age_text", ""));
+        body.put("p_allergies", local.optString("allergies", ""));
+        body.put("p_chronic_conditions", local.optString("chronic_conditions", ""));
+        body.put("p_current_medications", local.optString("current_medications", ""));
+        Response r = request("POST", "/rest/v1/rpc/update_patient_medical_summary", body.toString(), null);
+        return ok(r) && "true".equalsIgnoreCase(r.body.trim());
     }
 
     public boolean upsertVisit(String clinicId, String deviceId, JSONObject local) throws Exception {
