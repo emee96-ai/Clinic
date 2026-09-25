@@ -264,9 +264,37 @@ public class MainActivity extends Activity {
 
         LinearLayout identity = card();
         identity.addView(tv(visit.patientName, 21, ink, true));
-        identity.addView(tv((patient == null ? "" : safe(patient.phone)) + "   " + (patient == null ? "" : safe(patient.gender)), 13, muted, false));
+        String identityLine = (patient == null ? "" : safe(patient.gender));
+        if (patient != null && !safe(patient.ageText).isEmpty()) identityLine += "  •  " + patient.ageText;
+        if (patient != null && !safe(patient.phone).isEmpty()) identityLine += "  •  " + patient.phone;
+        identity.addView(tv(identityLine, 13, muted, false));
         identity.addView(tv("الزيارة: " + typeLabel(visit.type), 14, primary, true));
         content.addView(identity);
+
+        if (patient != null) {
+            LinearLayout medical = card();
+            medical.addView(tv("معلومات طبية مهمة", 16, ink, true));
+            boolean any = false;
+            if (!safe(patient.allergies).isEmpty()) {
+                medical.addView(tv("⚠ الحساسية: " + patient.allergies, 14, warning, true));
+                any = true;
+            }
+            if (!safe(patient.chronicConditions).isEmpty()) {
+                medical.addView(tv("أمراض مزمنة: " + patient.chronicConditions, 14, ink, false));
+                any = true;
+            }
+            if (!safe(patient.currentMedications).isEmpty()) {
+                medical.addView(tv("أدوية حالية: " + patient.currentMedications, 14, ink, false));
+                any = true;
+            }
+            if (!any) medical.addView(tv("لم تُسجل حساسية أو أمراض مزمنة أو أدوية حالية بعد.", 13, muted, false));
+            if (canEditMedicalProfile()) {
+                TextView editMedical = link("تحديث المعلومات الطبية ←");
+                editMedical.setOnClickListener(v -> patientMedicalDialog(patient, () -> showDoctorVisit(visitId)));
+                medical.addView(editMedical);
+            }
+            content.addView(medical);
+        }
 
         List<ClinicDb.Visit> history = db.visitsForPatient(visit.patientId);
         int previous = Math.max(0, history.size() - 1);
@@ -385,7 +413,10 @@ public class MainActivity extends Activity {
         for (ClinicDb.Patient p : list) {
             LinearLayout c = card();
             c.addView(tv(p.name, 18, ink, true));
-            c.addView(tv("كرت #" + p.cardNo + (safe(p.phone).isEmpty() ? "" : "  •  " + p.phone), 13, muted, false));
+            String sub = "كرت #" + p.cardNo;
+            if (!safe(p.ageText).isEmpty()) sub += "  •  " + p.ageText;
+            if (!safe(p.phone).isEmpty()) sub += "  •  " + p.phone;
+            c.addView(tv(sub, 13, muted, false));
             c.setOnClickListener(v -> showPatientDetail(p.id));
             content.addView(c);
         }
@@ -398,9 +429,22 @@ public class MainActivity extends Activity {
         LinearLayout profile = card();
         profile.addView(tv(p.name, 23, ink, true));
         profile.addView(tv("رقم الكرت: #" + p.cardNo, 15, primary, true));
+        profile.addView(tv("العمر: " + (safe(p.ageText).isEmpty() ? "غير مسجل" : p.ageText), 14, muted, false));
         profile.addView(tv("الهاتف: " + (safe(p.phone).isEmpty() ? "غير مسجل" : p.phone), 14, muted, false));
         profile.addView(tv("النوع: " + (safe(p.gender).isEmpty() ? "غير محدد" : p.gender), 14, muted, false));
         content.addView(profile);
+
+        LinearLayout medical = card();
+        medical.addView(tv("المعلومات الطبية الأساسية", 16, ink, true));
+        medical.addView(tv("الحساسية: " + (safe(p.allergies).isEmpty() ? "غير مسجلة" : p.allergies), 14, safe(p.allergies).isEmpty() ? muted : warning, !safe(p.allergies).isEmpty()));
+        medical.addView(tv("الأمراض المزمنة: " + (safe(p.chronicConditions).isEmpty() ? "غير مسجلة" : p.chronicConditions), 14, muted, false));
+        medical.addView(tv("الأدوية الحالية: " + (safe(p.currentMedications).isEmpty() ? "غير مسجلة" : p.currentMedications), 14, muted, false));
+        if (canEditMedicalProfile()) {
+            TextView editMedical = link("تحديث المعلومات الطبية ←");
+            editMedical.setOnClickListener(v -> patientMedicalDialog(p, () -> showPatientDetail(patientId)));
+            medical.addView(editMedical);
+        }
+        content.addView(medical);
 
         if (!ROLE_DOCTOR.equals(role) && !db.isOperationalDayClosed()) {
             content.addView(primaryButton("إضافة زيارة جديدة", v -> existingVisitDialog(p, false)));
@@ -542,8 +586,9 @@ public class MainActivity extends Activity {
         LinearLayout box = dialogBox();
         EditText name = field("الاسم الكامل", false);
         EditText phone = field("رقم الهاتف", false); phone.setInputType(InputType.TYPE_CLASS_PHONE);
+        EditText age = field("العمر — مثال: 32 سنة / 8 شهور", false);
         Spinner gender = spinner(new String[]{"غير محدد", "أنثى", "ذكر"});
-        box.addView(name); box.addView(space(8)); box.addView(phone); box.addView(space(8)); box.addView(gender);
+        box.addView(name); box.addView(space(8)); box.addView(phone); box.addView(space(8)); box.addView(age); box.addView(space(8)); box.addView(gender);
         new AlertDialog.Builder(this)
                 .setTitle("تسجيل مريض جديد")
                 .setView(box)
@@ -551,7 +596,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("تسجيل", (d, w) -> {
                     String n = str(name).trim();
                     if (n.length() < 2) { toast("اكتبي اسم المريض"); return; }
-                    long patientId = db.createPatient(n, str(phone), String.valueOf(gender.getSelectedItem()));
+                    long patientId = db.createPatient(n, str(phone), String.valueOf(gender.getSelectedItem()), str(age), "", "", "");
                     if (patientId <= 0) { toast("ما عندك صلاحية تسجيل مريض أو البيانات غير صحيحة"); return; }
                     long visitId = db.createVisit(patientId, ClinicDb.NEW, visitFee());
                     ClinicDb.Patient p = db.getPatient(patientId);
@@ -559,6 +604,32 @@ public class MainActivity extends Activity {
                     if (visitId <= 0) { toast("تم حفظ الكرت لكن تعذر إنشاء الزيارة"); showPatientDetail(patientId); return; }
                     toast("تم التسجيل • كرت #" + (p == null ? "" : p.cardNo));
                     showQueue();
+                }).show();
+    }
+
+    private void patientMedicalDialog(ClinicDb.Patient patient, Runnable afterSave) {
+        if (patient == null) return;
+        LinearLayout box = dialogBox();
+        EditText age = field("العمر — مثال: 32 سنة / 8 شهور", false); age.setText(patient.ageText);
+        EditText allergies = field("الحساسية — أدوية / أطعمة / أخرى", true); allergies.setText(patient.allergies);
+        EditText chronic = field("الأمراض المزمنة", true); chronic.setText(patient.chronicConditions);
+        EditText medications = field("الأدوية الحالية", true); medications.setText(patient.currentMedications);
+        box.addView(labeled("العمر", age));
+        box.addView(labeled("الحساسية", allergies));
+        box.addView(labeled("الأمراض المزمنة", chronic));
+        box.addView(labeled("الأدوية الحالية", medications));
+        new AlertDialog.Builder(this)
+                .setTitle("المعلومات الطبية الأساسية")
+                .setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("حفظ", (d, w) -> {
+                    boolean ok = db.updatePatientMedical(patient.id, str(age), str(allergies), str(chronic), str(medications));
+                    if (ok) {
+                        SyncCoordinator.kick(this);
+                        LocalSyncManager.kick(this);
+                        toast("تم حفظ المعلومات الطبية");
+                        if (afterSave != null) afterSave.run();
+                    } else toast("تعذر الحفظ أو لا توجد صلاحية");
                 }).show();
     }
 
@@ -793,6 +864,9 @@ public class MainActivity extends Activity {
     private String safe(String s) { return s == null ? "" : s; }
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
     private boolean isOwnerDoctor() { return auth != null && "owner_doctor".equals(auth.memberRole()); }
+    private boolean canEditMedicalProfile() {
+        return auth == null || !auth.hasRemoteIdentity() || auth.can("edit_patients") || auth.can("edit_clinical");
+    }
 
     private String waitingTime(String createdAt) {
         try {
