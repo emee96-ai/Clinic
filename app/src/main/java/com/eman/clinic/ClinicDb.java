@@ -26,12 +26,12 @@ public class ClinicDb extends SQLiteOpenHelper {
     private final AuthStore auth;
 
     public ClinicDb(Context context) {
-        super(context, "clinic_offline.db", null, 2);
+        super(context, "clinic_offline.db", null, 3);
         auth = new AuthStore(context.getApplicationContext());
     }
 
     @Override public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, gender TEXT, created_at TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, gender TEXT, age_text TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', chronic_conditions TEXT NOT NULL DEFAULT '', current_medications TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
         db.execSQL("CREATE TABLE visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id))");
         db.execSQL("CREATE TABLE payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL)");
         db.execSQL("CREATE TABLE day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL)");
@@ -49,10 +49,22 @@ public class ClinicDb extends SQLiteOpenHelper {
             db.execSQL("DROP TABLE IF EXISTS visits");
             db.execSQL("DROP TABLE IF EXISTS patients");
             onCreate(db);
+            return;
+        }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE patients ADD COLUMN age_text TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE patients ADD COLUMN allergies TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE patients ADD COLUMN chronic_conditions TEXT NOT NULL DEFAULT ''");
+            db.execSQL("ALTER TABLE patients ADD COLUMN current_medications TEXT NOT NULL DEFAULT ''");
         }
     }
 
     public long createPatient(String name, String phone, String gender) {
+        return createPatient(name, phone, gender, "", "", "", "");
+    }
+
+    public long createPatient(String name, String phone, String gender, String ageText,
+                              String allergies, String chronicConditions, String currentMedications) {
         if (!can("edit_patients")) return -1;
         String cleanName = name == null ? "" : name.trim();
         if (cleanName.length() < 2) return -1;
@@ -62,10 +74,29 @@ public class ClinicDb extends SQLiteOpenHelper {
         v.put("full_name", cleanName);
         v.put("phone", phone == null ? "" : phone.trim());
         v.put("gender", gender == null ? "" : gender);
+        v.put("age_text", safe(ageText).trim());
+        v.put("allergies", safe(allergies).trim());
+        v.put("chronic_conditions", safe(chronicConditions).trim());
+        v.put("current_medications", safe(currentMedications).trim());
         v.put("created_at", now());
         long id = db.insertOrThrow("patients", null, v);
         audit(db, "CREATE_PATIENT", "patient", id, cleanName);
         return id;
+    }
+
+    public boolean updatePatientMedical(long patientId, String ageText, String allergies,
+                                        String chronicConditions, String currentMedications) {
+        if (!(can("edit_patients") || can("edit_clinical"))) return false;
+        if (!patientExists(patientId)) return false;
+        ContentValues v = new ContentValues();
+        v.put("age_text", safe(ageText).trim());
+        v.put("allergies", safe(allergies).trim());
+        v.put("chronic_conditions", safe(chronicConditions).trim());
+        v.put("current_medications", safe(currentMedications).trim());
+        SQLiteDatabase db = getWritableDatabase();
+        int changed = db.update("patients", v, "id=?", new String[]{String.valueOf(patientId)});
+        if (changed > 0) audit(db, "UPDATE_PATIENT_MEDICAL", "patient", patientId, "");
+        return changed > 0;
     }
 
     public long createVisit(long patientId, String type, int fee) {
@@ -167,7 +198,7 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public Patient getPatient(long id) {
         if (!can("view_patients")) return null;
-        Cursor c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, created_at FROM patients WHERE id=?", new String[]{String.valueOf(id)});
+        Cursor c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, age_text, allergies, chronic_conditions, current_medications, created_at FROM patients WHERE id=?", new String[]{String.valueOf(id)});
         Patient p = c.moveToFirst() ? patientFrom(c) : null;
         c.close();
         return p;
@@ -177,7 +208,7 @@ public class ClinicDb extends SQLiteOpenHelper {
         if (!can("view_patients")) return null;
         String q = query == null ? "" : query.trim();
         if (q.isEmpty()) return null;
-        Cursor c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, created_at FROM patients WHERE CAST(card_no AS TEXT)=? OR phone=? OR full_name LIKE ? ORDER BY id DESC LIMIT 1", new String[]{q, q, "%" + q + "%"});
+        Cursor c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, age_text, allergies, chronic_conditions, current_medications, created_at FROM patients WHERE CAST(card_no AS TEXT)=? OR phone=? OR full_name LIKE ? ORDER BY id DESC LIMIT 1", new String[]{q, q, "%" + q + "%"});
         Patient p = c.moveToFirst() ? patientFrom(c) : null;
         c.close();
         return p;
@@ -189,9 +220,9 @@ public class ClinicDb extends SQLiteOpenHelper {
         String q = query == null ? "" : query.trim();
         Cursor c;
         if (q.isEmpty()) {
-            c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, created_at FROM patients ORDER BY id DESC LIMIT 100", null);
+            c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, age_text, allergies, chronic_conditions, current_medications, created_at FROM patients ORDER BY id DESC LIMIT 100", null);
         } else {
-            c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, created_at FROM patients WHERE CAST(card_no AS TEXT) LIKE ? OR phone LIKE ? OR full_name LIKE ? ORDER BY id DESC LIMIT 100", new String[]{"%" + q + "%", "%" + q + "%", "%" + q + "%"});
+            c = getReadableDatabase().rawQuery("SELECT id, card_no, full_name, phone, gender, age_text, allergies, chronic_conditions, current_medications, created_at FROM patients WHERE CAST(card_no AS TEXT) LIKE ? OR phone LIKE ? OR full_name LIKE ? ORDER BY id DESC LIMIT 100", new String[]{"%" + q + "%", "%" + q + "%", "%" + q + "%"});
         }
         while (c.moveToNext()) out.add(patientFrom(c));
         c.close();
@@ -334,7 +365,11 @@ public class ClinicDb extends SQLiteOpenHelper {
         p.name = c.getString(2);
         p.phone = c.getString(3);
         p.gender = c.getString(4);
-        p.createdAt = c.getString(5);
+        p.ageText = safe(c.getString(5));
+        p.allergies = safe(c.getString(6));
+        p.chronicConditions = safe(c.getString(7));
+        p.currentMedications = safe(c.getString(8));
+        p.createdAt = c.getString(9);
         return p;
     }
 
@@ -407,7 +442,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     public static class Patient {
         public long id;
         public int cardNo;
-        public String name = "", phone = "", gender = "", createdAt = "";
+        public String name = "", phone = "", gender = "", ageText = "", allergies = "", chronicConditions = "", currentMedications = "", createdAt = "";
     }
 
     public static class Visit {
