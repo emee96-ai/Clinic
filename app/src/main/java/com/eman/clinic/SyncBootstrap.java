@@ -2,7 +2,8 @@ package com.eman.clinic;
 
 import android.content.Context;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
+
+import net.zetetic.database.sqlcipher.SQLiteDatabase;
 
 /** Installs database-level change tracking without touching the clinic workflow code. */
 public final class SyncBootstrap {
@@ -17,6 +18,7 @@ public final class SyncBootstrap {
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_entity_keys (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, sync_key TEXT NOT NULL UNIQUE, PRIMARY KEY(entity_type, local_id))");
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(entity_type, local_id))");
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)");
+                helper.bindToActiveClinic(db);
 
                 boolean initialSeed = !metaEquals(db, "sync_tracking_seeded", "1");
 

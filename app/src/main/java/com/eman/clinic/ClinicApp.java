@@ -13,6 +13,7 @@ public class ClinicApp extends Application implements Application.ActivityLifecy
 
     @Override public void onCreate() {
         super.onCreate();
+        System.loadLibrary("sqlcipher");
         registerActivityLifecycleCallbacks(this);
         SyncBootstrap.install(this);
         SyncCoordinator.start(this);

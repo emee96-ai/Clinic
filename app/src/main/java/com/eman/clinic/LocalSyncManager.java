@@ -4,7 +4,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
+import net.zetetic.database.sqlcipher.SQLiteDatabase;
 import android.util.Base64;
 
 import org.json.JSONArray;
@@ -74,12 +74,28 @@ public final class LocalSyncManager {
     }
 
     public static String pairKey(Context context) {
-        return prefs(context).getString("pair_key", "");
+        Context appContext = context.getApplicationContext();
+        String key = scopedKey(appContext, "pair_key");
+        SecureStorage secrets = new SecureStorage(appContext, PREF + "_secrets");
+        String stored = secrets.getString(key, "");
+        if (!stored.isEmpty()) return stored;
+
+        // One-time migration from the pre-1.15 plaintext, device-wide pairing key.
+        String legacy = prefs(appContext).getString("pair_key", "");
+        if (!legacy.isEmpty() && !new AuthStore(appContext).clinicId().isEmpty()) {
+            secrets.putString(key, legacy);
+            prefs(appContext).edit().remove("pair_key").apply();
+            return legacy;
+        }
+        return "";
     }
 
     public static void savePairKey(Context context, String key) {
         String normalized = key == null ? "" : key.trim().replace(" ", "").toUpperCase(Locale.US);
-        prefs(context).edit().putString("pair_key", normalized).remove("last_error").apply();
+        Context appContext = context.getApplicationContext();
+        SecureStorage secrets = new SecureStorage(appContext, PREF + "_secrets");
+        secrets.putString(scopedKey(appContext, "pair_key"), normalized);
+        prefs(appContext).edit().remove(scopedKey(appContext, "last_error")).apply();
         kick(context);
     }
 
@@ -91,11 +107,11 @@ public final class LocalSyncManager {
 
     public static String status(Context context) {
         SharedPreferences p = prefs(context);
-        String key = p.getString("pair_key", "");
+        String key = pairKey(context);
         if (key.length() < 16) return "المزامنة المحلية غير مربوطة بعد";
-        String error = p.getString("last_error", "");
-        String last = p.getString("last_sync_at", "");
-        String peer = p.getString("last_peer", "");
+        String error = p.getString(scopedKey(context, "last_error"), "");
+        String last = p.getString(scopedKey(context, "last_sync_at"), "");
+        String peer = p.getString(scopedKey(context, "last_peer"), "");
         if (!last.isEmpty()) return "آخر مزامنة محلية: " + last + (peer.isEmpty() ? "" : " • " + peer);
         if (!error.isEmpty()) return "جاهزة للربط • " + error;
         return "جاهزة • وصّلي الجهازين بنفس Wi‑Fi أو Hotspot";
@@ -103,6 +119,12 @@ public final class LocalSyncManager {
 
     private static SharedPreferences prefs(Context context) {
         return context.getApplicationContext().getSharedPreferences(PREF, Context.MODE_PRIVATE);
+    }
+
+    private static String scopedKey(Context context, String name) {
+        AuthStore auth = new AuthStore(context.getApplicationContext());
+        String scope = ClinicDatabaseScope.scopeId(auth.clinicId(), auth.userId());
+        return name + "_" + ClinicDatabaseScope.databaseName(scope);
     }
 
     private static boolean configured() {
@@ -592,14 +614,14 @@ public final class LocalSyncManager {
 
     private static void noteSuccess(String peerDevice) {
         prefs(app).edit()
-                .putString("last_sync_at", new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()))
-                .putString("last_peer", peerDevice == null || peerDevice.length() < 8 ? "جهاز العيادة" : "جهاز " + peerDevice.substring(0, 8))
-                .remove("last_error").apply();
+                .putString(scopedKey(app, "last_sync_at"), new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()))
+                .putString(scopedKey(app, "last_peer"), peerDevice == null || peerDevice.length() < 8 ? "جهاز العيادة" : "جهاز " + peerDevice.substring(0, 8))
+                .remove(scopedKey(app, "last_error")).apply();
     }
 
     private static void noteError(String message) {
         Context c = app;
-        if (c != null) prefs(c).edit().putString("last_error", message == null ? "" : message).apply();
+        if (c != null) prefs(c).edit().putString(scopedKey(c, "last_error"), message == null ? "" : message).apply();
     }
 
     private static void writeLine(BufferedWriter out, String value) throws Exception {

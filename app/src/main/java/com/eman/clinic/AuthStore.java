@@ -12,10 +12,12 @@ public final class AuthStore {
     private static final String PREF = "clinic_remote_auth";
     private final Context context;
     private final SharedPreferences prefs;
+    private final SecureStorage secure;
 
     public AuthStore(Context context) {
         this.context = context.getApplicationContext();
         prefs = this.context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        secure = new SecureStorage(this.context, PREF);
         if ("owner_doctor".equals(prefs.getString("member_role", ""))) {
             this.context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
                     .putString("role", "DOCTOR")
@@ -25,15 +27,14 @@ public final class AuthStore {
     }
 
     public void saveSession(String accessToken, String refreshToken, String userId) {
-        SharedPreferences.Editor e = prefs.edit();
-        if (accessToken != null) e.putString("access_token", accessToken);
-        if (refreshToken != null && !refreshToken.isEmpty()) e.putString("refresh_token", refreshToken);
-        if (userId != null && !userId.isEmpty()) e.putString("user_id", userId);
-        e.apply();
+        if (accessToken != null) secure.putString("access_token", accessToken);
+        if (refreshToken != null && !refreshToken.isEmpty()) secure.putString("refresh_token", refreshToken);
+        if (userId != null && !userId.isEmpty()) secure.putString("user_id", userId);
     }
 
     public void saveClinic(String clinicId, String clinicName) {
-        prefs.edit().putString("clinic_id", safe(clinicId)).putString("clinic_name", safe(clinicName)).apply();
+        secure.putString("clinic_id", safe(clinicId));
+        prefs.edit().putString("clinic_name", safe(clinicName)).apply();
         context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
                 .putString("clinic_name", safe(clinicName).isEmpty() ? "العيادة" : safe(clinicName)).apply();
     }
@@ -108,10 +109,10 @@ public final class AuthStore {
                 .apply();
     }
 
-    public String accessToken() { return prefs.getString("access_token", ""); }
-    public String refreshToken() { return prefs.getString("refresh_token", ""); }
-    public String userId() { return prefs.getString("user_id", ""); }
-    public String clinicId() { return prefs.getString("clinic_id", ""); }
+    public String accessToken() { return secure.getString("access_token", ""); }
+    public String refreshToken() { return secure.getString("refresh_token", ""); }
+    public String userId() { return secure.getString("user_id", ""); }
+    public String clinicId() { return secure.getString("clinic_id", ""); }
     public String clinicName() { return prefs.getString("clinic_name", ""); }
     public String memberRole() { return prefs.getString("member_role", ""); }
     public String memberDisplayName() { return prefs.getString("member_display_name", ""); }
@@ -150,7 +151,7 @@ public final class AuthStore {
 
     public void clearRemoteSession() {
         updateTeamLauncher(false);
-        prefs.edit().clear().apply();
+        secure.clear();
     }
 
     private static String safe(String value) { return value == null ? "" : value; }

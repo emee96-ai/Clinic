@@ -3,7 +3,8 @@ package com.eman.clinic;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
+
+import net.zetetic.database.sqlcipher.SQLiteDatabase;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -19,6 +20,10 @@ public class SyncStore {
     public SyncStore(Context context) {
         helper = new ClinicDb(context.getApplicationContext());
         SyncBootstrap.install(context.getApplicationContext());
+        AuthStore auth = new AuthStore(context.getApplicationContext());
+        if (auth.hasRemoteIdentity() && !helper.isBoundToActiveClinic()) {
+            throw new SecurityException("Sync blocked: clinic database scope mismatch");
+        }
     }
 
     public int pendingCount() {

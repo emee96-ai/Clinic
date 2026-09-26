@@ -3,16 +3,22 @@ package com.eman.clinic;
 import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
-import android.database.sqlite.SQLiteDatabase;
-import android.database.sqlite.SQLiteOpenHelper;
 
+import net.zetetic.database.sqlcipher.SQLiteDatabase;
+import net.zetetic.database.sqlcipher.SQLiteOpenHelper;
+
+import java.io.File;
 import java.text.SimpleDateFormat;
+import java.util.HashSet;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class ClinicDb extends SQLiteOpenHelper {
+    private static final int DATABASE_VERSION = 4;
+    private static final String LEGACY_DATABASE = "clinic_offline.db";
     public static final String NEW = "NEW";
     public static final String FREE_FOLLOWUP = "FREE_FOLLOWUP";
     public static final String PAID_FOLLOWUP = "PAID_FOLLOWUP";
@@ -24,38 +30,219 @@ public class ClinicDb extends SQLiteOpenHelper {
     public static final String COMPLETED = "COMPLETED";
 
     private final AuthStore auth;
+    private final Context context;
+    private final String scopeId;
+    private final String databaseName;
 
     public ClinicDb(Context context) {
-        super(context, "clinic_offline.db", null, 3);
-        auth = new AuthStore(context.getApplicationContext());
+        this(context.getApplicationContext(), configuration(context.getApplicationContext()));
+    }
+
+    private ClinicDb(Context context, Configuration configuration) {
+        super(context, configuration.databaseName, configuration.password, null,
+                DATABASE_VERSION, 0, null, null, false);
+        this.context = context;
+        this.scopeId = configuration.scopeId;
+        this.databaseName = configuration.databaseName;
+        auth = new AuthStore(context);
+        migrateLegacyDatabaseIfNeeded(configuration.targetExisted);
+    }
+
+    private static Configuration configuration(Context context) {
+        System.loadLibrary("sqlcipher");
+        AuthStore auth = new AuthStore(context);
+        String scope = ClinicDatabaseScope.scopeId(auth.clinicId(), auth.userId());
+        String name = ClinicDatabaseScope.databaseName(scope);
+        boolean existed = context.getDatabasePath(name).exists();
+        return new Configuration(scope, name, DatabaseKeyManager.getOrCreate(context, scope), existed);
+    }
+
+    @Override public void onConfigure(SQLiteDatabase db) {
+        super.onConfigure(db);
+        db.setForeignKeyConstraintsEnabled(true);
     }
 
     @Override public void onCreate(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, gender TEXT, age_text TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', chronic_conditions TEXT NOT NULL DEFAULT '', current_medications TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
-        db.execSQL("CREATE TABLE visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id))");
-        db.execSQL("CREATE TABLE payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL)");
-        db.execSQL("CREATE TABLE day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL)");
-        db.execSQL("CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT, created_at TEXT NOT NULL)");
-        db.execSQL("CREATE INDEX idx_visits_patient ON visits(patient_id)");
-        db.execSQL("CREATE INDEX idx_visits_status ON visits(status)");
-        db.execSQL("CREATE INDEX idx_payments_visit ON payments(visit_id)");
+        createCoreSchema(db);
+        createSyncSchema(db);
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         if (oldVersion < 2) {
-            db.execSQL("DROP TABLE IF EXISTS audit_log");
-            db.execSQL("DROP TABLE IF EXISTS day_closures");
-            db.execSQL("DROP TABLE IF EXISTS payments");
-            db.execSQL("DROP TABLE IF EXISTS visits");
-            db.execSQL("DROP TABLE IF EXISTS patients");
-            onCreate(db);
-            return;
+            // v1 already contained the core tables. Repair missing objects in place;
+            // never drop clinic data during an application upgrade.
+            createCoreSchema(db);
         }
         if (oldVersion < 3) {
-            db.execSQL("ALTER TABLE patients ADD COLUMN age_text TEXT NOT NULL DEFAULT ''");
-            db.execSQL("ALTER TABLE patients ADD COLUMN allergies TEXT NOT NULL DEFAULT ''");
-            db.execSQL("ALTER TABLE patients ADD COLUMN chronic_conditions TEXT NOT NULL DEFAULT ''");
-            db.execSQL("ALTER TABLE patients ADD COLUMN current_medications TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "patients", "age_text", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "patients", "allergies", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "patients", "chronic_conditions", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "patients", "current_medications", "TEXT NOT NULL DEFAULT ''");
+        }
+        if (oldVersion < 4) addPaymentForeignKeyWithoutDataLoss(db);
+        createSyncSchema(db);
+    }
+
+    private static void createCoreSchema(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, gender TEXT, age_text TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', chronic_conditions TEXT NOT NULL DEFAULT '', current_medications TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE RESTRICT)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(visit_id) REFERENCES visits(id) ON DELETE RESTRICT)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT, created_at TEXT NOT NULL)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_patient ON visits(patient_id)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_payments_visit ON payments(visit_id)");
+    }
+
+    private static void createSyncSchema(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS sync_entity_keys (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, sync_key TEXT NOT NULL UNIQUE, PRIMARY KEY(entity_type, local_id))");
+        db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(entity_type, local_id))");
+        db.execSQL("CREATE TABLE IF NOT EXISTS sync_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)");
+    }
+
+    private static void addColumnIfMissing(SQLiteDatabase db, String table, String column, String definition) {
+        Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null);
+        try {
+            while (c.moveToNext()) if (column.equals(c.getString(1))) return;
+        } finally { c.close(); }
+        db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    }
+
+    private static void addPaymentForeignKeyWithoutDataLoss(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS migration_quarantine_payments (id INTEGER PRIMARY KEY, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, reason TEXT NOT NULL)");
+        db.execSQL("INSERT OR REPLACE INTO migration_quarantine_payments(id,visit_id,amount,method,created_at,reason) " +
+                "SELECT p.id,p.visit_id,p.amount,p.method,p.created_at,'missing_visit_during_v4_migration' FROM payments p LEFT JOIN visits v ON v.id=p.visit_id WHERE v.id IS NULL");
+        db.execSQL("CREATE TABLE payments_v4 (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(visit_id) REFERENCES visits(id) ON DELETE RESTRICT)");
+        db.execSQL("INSERT INTO payments_v4(id,visit_id,amount,method,created_at) SELECT p.id,p.visit_id,p.amount,p.method,p.created_at FROM payments p JOIN visits v ON v.id=p.visit_id");
+        db.execSQL("DROP TABLE payments");
+        db.execSQL("ALTER TABLE payments_v4 RENAME TO payments");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_payments_visit ON payments(visit_id)");
+    }
+
+    private void migrateLegacyDatabaseIfNeeded(boolean targetExisted) {
+        File legacy = context.getDatabasePath(LEGACY_DATABASE);
+        if (!legacy.exists()) return;
+        SQLiteDatabase target = null;
+        android.database.sqlite.SQLiteDatabase source = null;
+        try {
+            target = getWritableDatabase();
+            createSyncSchema(target);
+            if (targetExisted) {
+                if (!"1".equals(metaValue(target, "legacy_plaintext_migrated"))) {
+                    throw new IllegalStateException("Unverified encrypted migration target");
+                }
+            } else {
+                source = android.database.sqlite.SQLiteDatabase.openDatabase(
+                        legacy.getAbsolutePath(), null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY);
+                target.beginTransaction();
+                try {
+                    String[] tables = {"patients", "visits", "payments", "day_closures", "audit_log",
+                            "sync_entity_keys", "sync_dirty", "sync_meta"};
+                    for (String table : tables) copyAndVerifyTable(source, target, table);
+                    putMeta(target, "legacy_plaintext_migrated", "1");
+                    target.setTransactionSuccessful();
+                } finally { target.endTransaction(); }
+            }
+            if (!context.deleteDatabase(LEGACY_DATABASE) && legacy.exists()) {
+                throw new IllegalStateException("Plaintext clinic database could not be removed");
+            }
+        } catch (Exception e) {
+            if (!targetExisted) {
+                try { close(); } catch (Exception ignored) {}
+                context.deleteDatabase(databaseName);
+            }
+            throw new IllegalStateException("Clinic database encryption migration failed", e);
+        } finally {
+            if (source != null) source.close();
+        }
+    }
+
+    private static void copyAndVerifyTable(android.database.sqlite.SQLiteDatabase source,
+                                           SQLiteDatabase target, String table) {
+        if (!androidTableExists(source, table)) return;
+        Set<String> targetColumns = targetColumns(target, table);
+        Cursor rows = source.rawQuery("SELECT * FROM " + table, null);
+        int sourceCount = 0;
+        try {
+            String[] columns = rows.getColumnNames();
+            while (rows.moveToNext()) {
+                sourceCount++;
+                ContentValues values = new ContentValues();
+                for (int i = 0; i < columns.length; i++) {
+                    if (!targetColumns.contains(columns[i]) || rows.isNull(i)) continue;
+                    switch (rows.getType(i)) {
+                        case Cursor.FIELD_TYPE_INTEGER: values.put(columns[i], rows.getLong(i)); break;
+                        case Cursor.FIELD_TYPE_FLOAT: values.put(columns[i], rows.getDouble(i)); break;
+                        case Cursor.FIELD_TYPE_BLOB: values.put(columns[i], rows.getBlob(i)); break;
+                        default: values.put(columns[i], rows.getString(i));
+                    }
+                }
+                if (target.insertOrThrow(table, null, values) < 0) {
+                    throw new IllegalStateException("Failed to migrate " + table);
+                }
+            }
+        } finally { rows.close(); }
+        Cursor count = target.rawQuery("SELECT COUNT(*) FROM " + table, null);
+        try {
+            if (!count.moveToFirst() || count.getInt(0) != sourceCount) {
+                throw new IllegalStateException("Row count mismatch for " + table);
+            }
+        } finally { count.close(); }
+    }
+
+    private static boolean androidTableExists(android.database.sqlite.SQLiteDatabase db, String table) {
+        Cursor c = db.rawQuery("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", new String[]{table});
+        try { return c.moveToFirst(); } finally { c.close(); }
+    }
+
+    private static Set<String> targetColumns(SQLiteDatabase db, String table) {
+        Set<String> columns = new HashSet<>();
+        Cursor c = db.rawQuery("PRAGMA table_info(" + table + ")", null);
+        try { while (c.moveToNext()) columns.add(c.getString(1)); }
+        finally { c.close(); }
+        return columns;
+    }
+
+    void bindToActiveClinic(SQLiteDatabase db) {
+        createSyncSchema(db);
+        String expected = ClinicDatabaseScope.boundClinicId(scopeId);
+        String existing = metaValue(db, "bound_clinic_id");
+        if (!existing.isEmpty() && !existing.equals(expected)) {
+            throw new SecurityException("Local database belongs to another clinic");
+        }
+        if (existing.isEmpty() && !expected.isEmpty()) putMeta(db, "bound_clinic_id", expected);
+    }
+
+    boolean isBoundToActiveClinic() {
+        String expected = auth.clinicId();
+        if (expected.isEmpty()) return false;
+        return expected.equals(metaValue(getReadableDatabase(), "bound_clinic_id"));
+    }
+
+    private static String metaValue(SQLiteDatabase db, String key) {
+        Cursor c = db.rawQuery("SELECT meta_value FROM sync_meta WHERE meta_key=?", new String[]{key});
+        try { return c.moveToFirst() ? safe(c.getString(0)) : ""; }
+        finally { c.close(); }
+    }
+
+    private static void putMeta(SQLiteDatabase db, String key, String value) {
+        ContentValues values = new ContentValues();
+        values.put("meta_key", key);
+        values.put("meta_value", safe(value));
+        db.insertWithOnConflict("sync_meta", null, values, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    private static final class Configuration {
+        final String scopeId;
+        final String databaseName;
+        final byte[] password;
+        final boolean targetExisted;
+
+        Configuration(String scopeId, String databaseName, byte[] password, boolean targetExisted) {
+            this.scopeId = scopeId;
+            this.databaseName = databaseName;
+            this.password = password;
+            this.targetExisted = targetExisted;
         }
     }
 
