@@ -106,7 +106,8 @@ public class SyncStore {
     private SyncItem visitItem(long id, String changedAt) {
         SQLiteDatabase db = helper.getReadableDatabase();
         Cursor c = db.rawQuery(
-                "SELECT v.id,v.visit_type,v.status,v.fee,v.paid_amount,v.complaint,v.exam,v.diagnosis,v.labs,v.treatment,v.followup,v.created_at,v.started_at,v.completed_at,vk.sync_key,pk.sync_key " +
+                "SELECT v.id,v.visit_type,v.status,v.fee,v.paid_amount,v.complaint,v.exam,v.diagnosis,v.labs,v.treatment,v.followup,v.created_at,v.started_at,v.completed_at,vk.sync_key,pk.sync_key," +
+                        "v.assigned_doctor_user_id,v.assigned_doctor_name,v.cancellation_reason,v.cancelled_at,v.reopened_at,v.temperature,v.blood_pressure,v.pulse,v.weight,v.oxygen,v.medications_text " +
                         "FROM visits v JOIN sync_entity_keys vk ON vk.entity_type='visit' AND vk.local_id=v.id JOIN sync_entity_keys pk ON pk.entity_type='patient' AND pk.local_id=v.patient_id WHERE v.id=?",
                 new String[]{String.valueOf(id)});
         if (!c.moveToFirst()) { c.close(); return null; }
@@ -127,6 +128,17 @@ public class SyncStore {
             json.put("created_at", safe(c.getString(11)));
             json.put("started_at", safe(c.getString(12)));
             json.put("completed_at", safe(c.getString(13)));
+            json.put("assigned_doctor_user_id", safe(c.getString(16)));
+            json.put("assigned_doctor_name", safe(c.getString(17)));
+            json.put("cancellation_reason", safe(c.getString(18)));
+            json.put("cancelled_at", safe(c.getString(19)));
+            json.put("reopened_at", safe(c.getString(20)));
+            json.put("temperature", safe(c.getString(21)));
+            json.put("blood_pressure", safe(c.getString(22)));
+            json.put("pulse", safe(c.getString(23)));
+            json.put("weight", safe(c.getString(24)));
+            json.put("oxygen", safe(c.getString(25)));
+            json.put("medications_text", safe(c.getString(26)));
             SyncItem item = new SyncItem("visit", id, c.getString(14), changedAt, json.toString());
             c.close();
             return item;
@@ -337,7 +349,9 @@ public class SyncStore {
             ContentValues v = new ContentValues();
             v.put("card_no", row.getInt("card_no"));
             v.put("full_name", row.optString("full_name", ""));
-            v.put("phone", row.optString("phone", ""));
+            String phone = row.optString("phone", "");
+            v.put("phone", phone);
+            v.put("normalized_phone", ClinicWorkflowRules.normalizePhone(phone));
             v.put("gender", row.optString("gender", ""));
             v.put("age_text", row.optString("age_text", ""));
             v.put("allergies", row.optString("allergies", ""));
@@ -378,6 +392,17 @@ public class SyncStore {
             v.put("created_at", normalizeTime(row.optString("created_at", "")));
             v.put("started_at", normalizeNullable(row.optString("started_at", "")));
             v.put("completed_at", normalizeNullable(row.optString("completed_at", "")));
+            v.put("assigned_doctor_user_id", row.optString("assigned_doctor_user_id", ""));
+            v.put("assigned_doctor_name", row.optString("assigned_doctor_name", ""));
+            v.put("cancellation_reason", row.optString("cancellation_reason", ""));
+            v.put("cancelled_at", normalizeNullable(row.optString("cancelled_at", "")));
+            v.put("reopened_at", normalizeNullable(row.optString("reopened_at", "")));
+            v.put("temperature", row.optString("temperature", ""));
+            v.put("blood_pressure", row.optString("blood_pressure", ""));
+            v.put("pulse", row.optString("pulse", ""));
+            v.put("weight", row.optString("weight", ""));
+            v.put("oxygen", row.optString("oxygen", ""));
+            v.put("medications_text", row.optString("medications_text", ""));
             SQLiteDatabase db = helper.getWritableDatabase();
             long id;
             if (localId == null) id = db.insert("visits", null, v);

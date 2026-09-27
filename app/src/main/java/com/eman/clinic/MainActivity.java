@@ -8,7 +8,11 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -49,6 +53,9 @@ public class MainActivity extends Activity {
 
     private long activeVisitId = -1;
     private EditText activeComplaint, activeExam, activeDiagnosis, activeLabs, activeTreatment, activeFollowup;
+    private EditText activeTemperature, activeBloodPressure, activePulse, activeWeight, activeOxygen, activeMedications;
+    private final Handler draftHandler = new Handler(Looper.getMainLooper());
+    private final Runnable draftSaver = this::saveActiveDraft;
 
     @Override public void onCreate(Bundle bundle) {
         super.onCreate(bundle);
@@ -249,6 +256,8 @@ public class MainActivity extends Activity {
                     if (db.sendToDoctor(visit.id)) { toast("تم الإرسال للطبيب"); showQueue(); }
                     else { toast("تعذر الإرسال؛ حالة الزيارة تغيرت"); showQueue(); }
                 }));
+                card.addView(space(6));
+                card.addView(secondaryButton("تعديل الزيارة", v -> editVisitDialog(visit)));
             } else if (ClinicDb.WAITING.equals(visit.status) && ROLE_DOCTOR.equals(role)) {
                 card.addView(primaryButton("بدء الكشف", v -> {
                     if (db.startVisit(visit.id)) showDoctorVisit(visit.id);
@@ -256,6 +265,16 @@ public class MainActivity extends Activity {
                 }));
             } else if (ClinicDb.IN_CONSULT.equals(visit.status) && ROLE_DOCTOR.equals(role)) {
                 card.addView(primaryButton("متابعة الكشف", v -> showDoctorVisit(visit.id)));
+                card.addView(space(6));
+                card.addView(secondaryButton("تحويل لدكتور آخر", v -> {
+                    if (db.transferVisit(visit.id)) { toast("عادت الحالة للانتظار"); showDoctor(); }
+                    else toast("تعذر تحويل الحالة");
+                }));
+            }
+            if ((ClinicDb.REGISTERED.equals(visit.status) || ClinicDb.WAITING.equals(visit.status))
+                    && auth.can("manage_queue")) {
+                card.addView(space(6));
+                card.addView(secondaryButton("إلغاء الزيارة", v -> cancelVisitDialog(visit)));
             }
         }
         return card;
@@ -336,6 +355,12 @@ public class MainActivity extends Activity {
         EditText labs = field("الفحوصات المطلوبة / نتائج الفحوصات", true); labs.setText(visit.labs);
         EditText treatment = field("العلاج والروشتة", true); treatment.setText(visit.treatment);
         EditText followup = field("خطة المتابعة والتعليمات", true); followup.setText(visit.followup);
+        EditText temperature = field("الحرارة °C", false); temperature.setText(visit.temperature);
+        EditText bloodPressure = field("الضغط — مثال 120/80", false); bloodPressure.setText(visit.bloodPressure);
+        EditText pulse = field("النبض / دقيقة", false); pulse.setText(visit.pulse);
+        EditText weight = field("الوزن كجم", false); weight.setText(visit.weight);
+        EditText oxygen = field("الأكسجين %", false); oxygen.setText(visit.oxygen);
+        EditText medications = field("الأدوية: الاسم | الجرعة | التكرار | المدة", true); medications.setText(visit.medications);
 
         if (ClinicDb.LAB_RESULT.equals(visit.type)) {
             content.addView(labeled("نتيجة الفحوصات", labs));
@@ -351,6 +376,9 @@ public class MainActivity extends Activity {
         details.setOrientation(LinearLayout.VERTICAL);
         if (!ClinicDb.LAB_RESULT.equals(visit.type)) details.addView(labeled("الفحوصات", labs));
         details.addView(labeled("الفحص السريري", exam));
+        details.addView(labeled("العلامات الحيوية", temperature));
+        details.addView(bloodPressure); details.addView(pulse); details.addView(weight); details.addView(oxygen);
+        details.addView(labeled("الأدوية والجرعات", medications));
         details.addView(labeled("المتابعة", followup));
         details.setVisibility(View.GONE);
         TextView detailsToggle = secondaryButton("تفاصيل إضافية: الفحص والفحوصات والمتابعة", v -> {
@@ -362,15 +390,24 @@ public class MainActivity extends Activity {
         content.addView(tv("الحفظ تلقائي عند الانتقال أو إغلاق الشاشة", 12, muted, false));
         content.addView(space(8));
 
-        bindActiveVisit(visitId, complaint, exam, diagnosis, labs, treatment, followup);
+        bindActiveVisit(visitId, complaint, exam, diagnosis, labs, treatment, followup,
+                temperature, bloodPressure, pulse, weight, oxygen, medications);
 
         content.addView(secondaryButton("حفظ الآن", v -> {
-            boolean ok = db.saveClinical(visitId, str(complaint), str(exam), str(diagnosis), str(labs), str(treatment), str(followup), false);
+            boolean ok = saveClinicalForm(visitId, complaint, exam, diagnosis, labs, treatment,
+                    followup, temperature, bloodPressure, pulse, weight, oxygen, medications, false);
             toast(ok ? "تم الحفظ" : "لم يتم الحفظ؛ حالة الزيارة تغيرت");
         }));
         content.addView(space(8));
         content.addView(primaryButton("إنهاء الكشف وفتح المريض التالي", v -> {
-            boolean ok = db.saveClinical(visitId, str(complaint), str(exam), str(diagnosis), str(labs), str(treatment), str(followup), true);
+            if (!ClinicWorkflowRules.canCompleteClinical(visit.type, str(complaint), str(diagnosis), str(labs))) {
+                toast(ClinicDb.LAB_RESULT.equals(visit.type)
+                        ? "أدخلي نتيجة الفحوصات قبل الإنهاء"
+                        : "الشكوى والتشخيص مطلوبان قبل إنهاء الكشف");
+                return;
+            }
+            boolean ok = saveClinicalForm(visitId, complaint, exam, diagnosis, labs, treatment,
+                    followup, temperature, bloodPressure, pulse, weight, oxygen, medications, true);
             if (ok) {
                 activeVisitId = -1;
                 toast("تم حفظ وإغلاق الزيارة");
@@ -382,7 +419,10 @@ public class MainActivity extends Activity {
         }));
     }
 
-    private void bindActiveVisit(long visitId, EditText complaint, EditText exam, EditText diagnosis, EditText labs, EditText treatment, EditText followup) {
+    private void bindActiveVisit(long visitId, EditText complaint, EditText exam, EditText diagnosis,
+            EditText labs, EditText treatment, EditText followup, EditText temperature,
+            EditText bloodPressure, EditText pulse, EditText weight, EditText oxygen,
+            EditText medications) {
         activeVisitId = visitId;
         activeComplaint = complaint;
         activeExam = exam;
@@ -390,11 +430,35 @@ public class MainActivity extends Activity {
         activeLabs = labs;
         activeTreatment = treatment;
         activeFollowup = followup;
+        activeTemperature = temperature; activeBloodPressure = bloodPressure;
+        activePulse = pulse; activeWeight = weight; activeOxygen = oxygen;
+        activeMedications = medications;
+        TextWatcher watcher = new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                draftHandler.removeCallbacks(draftSaver);
+                draftHandler.postDelayed(draftSaver, 1200);
+            }
+            public void afterTextChanged(Editable s) {}
+        };
+        for (EditText field : new EditText[]{complaint, exam, diagnosis, labs, treatment, followup,
+                temperature, bloodPressure, pulse, weight, oxygen, medications}) field.addTextChangedListener(watcher);
     }
 
     private void saveActiveDraft() {
         if (activeVisitId <= 0 || db == null || activeComplaint == null) return;
-        db.saveClinical(activeVisitId, str(activeComplaint), str(activeExam), str(activeDiagnosis), str(activeLabs), str(activeTreatment), str(activeFollowup), false);
+        saveClinicalForm(activeVisitId, activeComplaint, activeExam, activeDiagnosis, activeLabs,
+                activeTreatment, activeFollowup, activeTemperature, activeBloodPressure,
+                activePulse, activeWeight, activeOxygen, activeMedications, false);
+    }
+
+    private boolean saveClinicalForm(long visitId, EditText complaint, EditText exam,
+            EditText diagnosis, EditText labs, EditText treatment, EditText followup,
+            EditText temperature, EditText bloodPressure, EditText pulse, EditText weight,
+            EditText oxygen, EditText medications, boolean complete) {
+        return db.saveClinical(visitId, str(complaint), str(exam), str(diagnosis), str(labs),
+                str(treatment), str(followup), str(temperature), str(bloodPressure), str(pulse),
+                str(weight), str(oxygen), str(medications), complete);
     }
 
     private void openNextDoctorPatient() {
@@ -474,6 +538,18 @@ public class MainActivity extends Activity {
             LinearLayout c = card();
             c.addView(tv(typeLabel(visit.type) + "  •  " + visit.createdAt, 14, primary, true));
             c.addView(tv("الحالة: " + statusLabel(visit.status), 13, muted, false));
+            if (ClinicDb.CANCELLED.equals(visit.status)) {
+                if (!safe(visit.cancellationReason).isEmpty())
+                    c.addView(tv("سبب الإلغاء: " + visit.cancellationReason, 13, warning, false));
+                if (auth.can("manage_queue")) {
+                    TextView reopen = link("إعادة فتح الزيارة ←");
+                    reopen.setOnClickListener(v -> {
+                        if (db.reopenVisit(visit.id)) { toast("أعيدت الزيارة للطابور"); showPatientDetail(patientId); }
+                        else toast("تعذر إعادة الفتح");
+                    });
+                    c.addView(reopen);
+                }
+            }
             if (!safe(visit.diagnosis).isEmpty()) c.addView(tv("التشخيص: " + visit.diagnosis, 15, ink, true));
             if (!safe(visit.labs).isEmpty()) c.addView(tv("الفحوصات: " + visit.labs, 14, ink, false));
             if (!safe(visit.treatment).isEmpty()) c.addView(tv("العلاج: " + visit.treatment, 14, ink, false));
@@ -631,15 +707,53 @@ public class MainActivity extends Activity {
                 .setPositiveButton("تسجيل", (d, w) -> {
                     String n = str(name).trim();
                     if (n.length() < 2) { toast("اكتبي اسم المريض"); return; }
-                    long patientId = db.createPatient(n, str(phone), String.valueOf(gender.getSelectedItem()),
-                            auth.can("edit_clinical") ? str(age) : "", "", "", "");
-                    if (patientId <= 0) { toast("ما عندك صلاحية تسجيل مريض أو البيانات غير صحيحة"); return; }
-                    long visitId = db.createVisit(patientId, ClinicDb.NEW, visitFee());
+                    ClinicDb.RegistrationResult result = db.registerPatientWithVisit(n, str(phone),
+                            String.valueOf(gender.getSelectedItem()),
+                            auth.can("edit_clinical") ? str(age) : "", ClinicDb.NEW, visitFee());
+                    if (result.code == -3) {
+                        toast("رقم الهاتف مسجل لمريض موجود؛ تم فتح ملفه");
+                        showPatientDetail(result.patientId);
+                        return;
+                    }
+                    if (result.code == -2) { toast("حساب اليوم مقفول؛ لم يتم إنشاء سجل ناقص"); return; }
+                    if (!result.success()) { toast("ما عندك صلاحية أو البيانات غير صحيحة"); return; }
+                    long patientId = result.patientId;
                     ClinicDb.Patient p = db.getPatient(patientId);
-                    if (visitId == -2) { toast("تم حفظ الكرت لكن حساب اليوم اتقفل قبل إضافة الزيارة"); showPatientDetail(patientId); return; }
-                    if (visitId <= 0) { toast("تم حفظ الكرت لكن تعذر إنشاء الزيارة"); showPatientDetail(patientId); return; }
                     toast("تم التسجيل • " + (p == null ? "" : cardLabel(p.cardNo)));
                     showQueue();
+                }).show();
+    }
+
+    private void cancelVisitDialog(ClinicDb.Visit visit) {
+        EditText reason = field("سبب الإلغاء", true);
+        new AlertDialog.Builder(this)
+                .setTitle("إلغاء زيارة " + visit.patientName)
+                .setView(reason)
+                .setNegativeButton("رجوع", null)
+                .setPositiveButton("إلغاء الزيارة", (d, w) -> {
+                    if (db.cancelVisit(visit.id, str(reason))) { toast("تم إلغاء الزيارة"); showQueue(); }
+                    else toast("اكتبي سبباً واضحاً أو حدّثي حالة الزيارة");
+                }).show();
+    }
+
+    private void editVisitDialog(ClinicDb.Visit visit) {
+        String[] types = {ClinicDb.NEW, ClinicDb.FREE_FOLLOWUP, ClinicDb.PAID_FOLLOWUP, ClinicDb.LAB_RESULT};
+        String[] labels = new String[types.length];
+        int selected = 0;
+        for (int i = 0; i < types.length; i++) {
+            labels[i] = typeLabel(types[i]);
+            if (types[i].equals(visit.type)) selected = i;
+        }
+        Spinner type = spinner(labels); type.setSelection(selected);
+        EditText fee = field("الرسوم", false); fee.setInputType(InputType.TYPE_CLASS_NUMBER);
+        fee.setText(String.valueOf(visit.fee));
+        LinearLayout box = dialogBox(); box.addView(type); box.addView(space(8)); box.addView(fee);
+        new AlertDialog.Builder(this).setTitle("تعديل الزيارة").setView(box)
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("حفظ", (d, w) -> {
+                    if (db.updateVisitRegistration(visit.id, types[type.getSelectedItemPosition()],
+                            intValue(fee, 0))) { toast("تم تعديل الزيارة"); showQueue(); }
+                    else toast("تعذر التعديل؛ ربما تغيرت حالة الزيارة");
                 }).show();
     }
 
@@ -690,23 +804,16 @@ public class MainActivity extends Activity {
         int since = db.daysSinceLastVisit(patient.id);
         boolean free = ClinicWorkflowRules.isFreeFollowup(since, followDays);
         String suggested = free ? ClinicDb.FREE_FOLLOWUP : ClinicDb.PAID_FOLLOWUP;
-        String[] types;
-        if (forceResult) types = new String[]{ClinicDb.LAB_RESULT};
-        else if (free) types = new String[]{ClinicDb.FREE_FOLLOWUP, ClinicDb.LAB_RESULT, ClinicDb.PAID_FOLLOWUP};
-        else types = new String[]{ClinicDb.PAID_FOLLOWUP, ClinicDb.LAB_RESULT};
-        String[] labels = new String[types.length];
-        for (int i = 0; i < types.length; i++) labels[i] = typeLabel(types[i]);
-        Spinner spinner = spinner(labels);
+        String automaticType = forceResult ? ClinicDb.LAB_RESULT : suggested;
         LinearLayout box = dialogBox();
-        box.addView(tv("اقتراح النظام: " + typeLabel(suggested) + (since == 9999 ? " • لا توجد زيارة مكتملة سابقة" : " • آخر زيارة مكتملة قبل " + since + " يوم"), 13, muted, false));
-        box.addView(space(8)); box.addView(spinner);
+        box.addView(tv("نوع الزيارة محسوب تلقائياً: " + typeLabel(automaticType)
+                + (since == 9999 ? " • لا توجد زيارة مكتملة سابقة" : " • آخر زيارة مكتملة قبل " + since + " يوم"), 13, muted, false));
         new AlertDialog.Builder(this)
                 .setTitle(patient.name)
                 .setView(box)
                 .setNegativeButton("إلغاء", null)
                 .setPositiveButton("إضافة للطابور", (d, w) -> {
-                    String type = types[spinner.getSelectedItemPosition()];
-                    long id = db.createVisit(patient.id, type, feeFor(type));
+                    long id = db.createVisit(patient.id, automaticType, feeFor(automaticType));
                     if (id == -2) toast("اليوم مقفول؛ لا يمكن إضافة زيارة");
                     else if (id < 0) toast("تعذر الإضافة: توجد زيارة مفتوحة أو لا توجد صلاحية");
                     else { toast("تمت إضافة الزيارة"); showQueue(); }
@@ -931,6 +1038,7 @@ public class MainActivity extends Activity {
         if (ClinicDb.WAITING.equals(value)) return "بانتظار الطبيب";
         if (ClinicDb.IN_CONSULT.equals(value)) return "داخل الكشف";
         if (ClinicDb.COMPLETED.equals(value)) return "مكتمل";
+        if (ClinicDb.CANCELLED.equals(value)) return "ملغي";
         return "مسجل";
     }
 
@@ -938,6 +1046,7 @@ public class MainActivity extends Activity {
         if (ClinicDb.WAITING.equals(value)) return Color.rgb(55, 108, 170);
         if (ClinicDb.IN_CONSULT.equals(value)) return warning;
         if (ClinicDb.COMPLETED.equals(value)) return primary;
+        if (ClinicDb.CANCELLED.equals(value)) return Color.rgb(155, 55, 55);
         return Color.rgb(100, 110, 115);
     }
 }

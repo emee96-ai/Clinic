@@ -84,7 +84,8 @@ public final class AuthStore {
             ClinicDb db = new ClinicDb(context);
             try {
                 db.getWritableDatabase().execSQL(
-                        "UPDATE visits SET complaint='',exam='',diagnosis='',labs='',treatment='',followup=''"
+                        "UPDATE visits SET complaint='',exam='',diagnosis='',labs='',treatment='',followup=''," +
+                                "temperature='',blood_pressure='',pulse='',weight='',oxygen='',medications_text=''"
                 );
                 db.getWritableDatabase().execSQL(
                         "UPDATE patients SET age_text='',allergies='',chronic_conditions='',current_medications=''"

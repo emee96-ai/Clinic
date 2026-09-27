@@ -50,6 +50,28 @@ public class ClinicWorkflowRulesTest {
         assertFalse(ClinicWorkflowRules.isValidVisitType("FREE_MANUAL"));
     }
 
+    @Test public void clinicalCompletionRequiresMinimumSafeData() {
+        assertTrue(ClinicWorkflowRules.canCompleteClinical(ClinicDb.NEW, "صداع", "صداع نصفي", ""));
+        assertFalse(ClinicWorkflowRules.canCompleteClinical(ClinicDb.NEW, "", "صداع نصفي", ""));
+        assertFalse(ClinicWorkflowRules.canCompleteClinical(ClinicDb.NEW, "صداع", "", ""));
+        assertTrue(ClinicWorkflowRules.canCompleteClinical(ClinicDb.LAB_RESULT, "", "", "CBC طبيعي"));
+        assertFalse(ClinicWorkflowRules.canCompleteClinical(ClinicDb.LAB_RESULT, "", "", ""));
+    }
+
+    @Test public void sudanesePhoneNormalizationPreventsFormattingDuplicates() {
+        assertEquals("249912345678", ClinicWorkflowRules.normalizePhone("0912 345 678"));
+        assertEquals("249912345678", ClinicWorkflowRules.normalizePhone("+249 912-345-678"));
+        assertEquals("249912345678", ClinicWorkflowRules.normalizePhone("00249 912 345 678"));
+    }
+
+    @Test public void cancellationReopenAndTransferHaveExplicitStates() {
+        assertTrue(ClinicWorkflowRules.canCancel(ClinicDb.REGISTERED));
+        assertTrue(ClinicWorkflowRules.canCancel(ClinicDb.WAITING));
+        assertFalse(ClinicWorkflowRules.canCancel(ClinicDb.IN_CONSULT));
+        assertTrue(ClinicWorkflowRules.canReopen(ClinicDb.CANCELLED));
+        assertTrue(ClinicWorkflowRules.canTransfer(ClinicDb.IN_CONSULT));
+    }
+
     @Test public void fullClinicDayScenarioCompletesSafely() {
         String status = ClinicDb.REGISTERED;
         int openQueue = 1;

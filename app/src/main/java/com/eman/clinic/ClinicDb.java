@@ -17,7 +17,7 @@ import java.util.Locale;
 import java.util.Set;
 
 public class ClinicDb extends SQLiteOpenHelper {
-    private static final int DATABASE_VERSION = 6;
+    private static final int DATABASE_VERSION = 7;
     private static final String LEGACY_DATABASE = "clinic_offline.db";
     public static final String NEW = "NEW";
     public static final String FREE_FOLLOWUP = "FREE_FOLLOWUP";
@@ -28,6 +28,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     public static final String WAITING = "WAITING";
     public static final String IN_CONSULT = "IN_CONSULT";
     public static final String COMPLETED = "COMPLETED";
+    public static final String CANCELLED = "CANCELLED";
 
     private final AuthStore auth;
     private final Context context;
@@ -95,18 +96,39 @@ public class ClinicDb extends SQLiteOpenHelper {
             addColumnIfMissing(db, "sync_conflicts", "remote_version", "INTEGER NOT NULL DEFAULT 0");
             normalizeLegacySyncKeys(db);
         }
+        if (oldVersion < 7) {
+            addColumnIfMissing(db, "patients", "normalized_phone", "TEXT NOT NULL DEFAULT ''");
+            normalizePatientPhones(db);
+            addColumnIfMissing(db, "visits", "assigned_doctor_user_id", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "assigned_doctor_name", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "followup_of_visit_id", "INTEGER");
+            addColumnIfMissing(db, "visits", "cancellation_reason", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "cancelled_at", "TEXT");
+            addColumnIfMissing(db, "visits", "reopened_at", "TEXT");
+            addColumnIfMissing(db, "visits", "temperature", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "blood_pressure", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "pulse", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "weight", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "oxygen", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "medications_text", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "visits", "draft_saved_at", "TEXT");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_patients_normalized_phone ON patients(normalized_phone)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_assigned_doctor ON visits(assigned_doctor_user_id,status)");
+        }
         createSyncSchema(db);
     }
 
     private static void createCoreSchema(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, gender TEXT, age_text TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', chronic_conditions TEXT NOT NULL DEFAULT '', current_medications TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE RESTRICT)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, normalized_phone TEXT NOT NULL DEFAULT '', gender TEXT, age_text TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', chronic_conditions TEXT NOT NULL DEFAULT '', current_medications TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', assigned_doctor_user_id TEXT NOT NULL DEFAULT '', assigned_doctor_name TEXT NOT NULL DEFAULT '', followup_of_visit_id INTEGER, cancellation_reason TEXT NOT NULL DEFAULT '', cancelled_at TEXT, reopened_at TEXT, temperature TEXT NOT NULL DEFAULT '', blood_pressure TEXT NOT NULL DEFAULT '', pulse TEXT NOT NULL DEFAULT '', weight TEXT NOT NULL DEFAULT '', oxygen TEXT NOT NULL DEFAULT '', medications_text TEXT NOT NULL DEFAULT '', draft_saved_at TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE RESTRICT, FOREIGN KEY(followup_of_visit_id) REFERENCES visits(id) ON DELETE SET NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(visit_id) REFERENCES visits(id) ON DELETE RESTRICT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT, actor_user_id TEXT NOT NULL DEFAULT '', actor_display_name TEXT NOT NULL DEFAULT '', actor_role TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_patient ON visits(patient_id)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_payments_visit ON payments(visit_id)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_patients_normalized_phone ON patients(normalized_phone)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_assigned_doctor ON visits(assigned_doctor_user_id,status)");
     }
 
     private static void createSyncSchema(SQLiteDatabase db) {
@@ -127,6 +149,17 @@ public class ClinicDb extends SQLiteOpenHelper {
             while (c.moveToNext()) if (column.equals(c.getString(1))) return;
         } finally { c.close(); }
         db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    }
+
+    private static void normalizePatientPhones(SQLiteDatabase db) {
+        Cursor c = db.rawQuery("SELECT id,phone FROM patients", null);
+        try {
+            while (c.moveToNext()) {
+                ContentValues v = new ContentValues();
+                v.put("normalized_phone", ClinicWorkflowRules.normalizePhone(c.getString(1)));
+                db.update("patients", v, "id=?", new String[]{String.valueOf(c.getLong(0))});
+            }
+        } finally { c.close(); }
     }
 
     private static void addPaymentForeignKeyWithoutDataLoss(SQLiteDatabase db) {
@@ -277,10 +310,13 @@ public class ClinicDb extends SQLiteOpenHelper {
         String cleanName = name == null ? "" : name.trim();
         if (cleanName.length() < 2) return -1;
         SQLiteDatabase db = getWritableDatabase();
+        String normalizedPhone = ClinicWorkflowRules.normalizePhone(phone);
+        if (!normalizedPhone.isEmpty() && patientIdByPhone(db, normalizedPhone) != null) return -3;
         ContentValues v = new ContentValues();
-        v.put("card_no", nextCardNo());
+        v.put("card_no", nextCardNo(db));
         v.put("full_name", cleanName);
         v.put("phone", phone == null ? "" : phone.trim());
+        v.put("normalized_phone", normalizedPhone);
         v.put("gender", gender == null ? "" : gender);
         v.put("age_text", safe(ageText).trim());
         v.put("allergies", safe(allergies).trim());
@@ -290,6 +326,36 @@ public class ClinicDb extends SQLiteOpenHelper {
         long id = db.insertOrThrow("patients", null, v);
         audit(db, "CREATE_PATIENT", "patient", id, cleanName);
         return id;
+    }
+
+    public RegistrationResult registerPatientWithVisit(String name, String phone, String gender,
+            String ageText, String type, int fee) {
+        if (!can("edit_patients") || !can("register_visits")) return RegistrationResult.failed(-1);
+        if (isTodayClosedInternal()) return RegistrationResult.failed(-2);
+        String cleanName = safe(name).trim();
+        if (cleanName.length() < 2 || !ClinicWorkflowRules.isValidVisitType(type))
+            return RegistrationResult.failed(-1);
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            String normalizedPhone = ClinicWorkflowRules.normalizePhone(phone);
+            Long duplicate = normalizedPhone.isEmpty() ? null : patientIdByPhone(db, normalizedPhone);
+            if (duplicate != null) return new RegistrationResult(-3, duplicate, -1);
+            ContentValues patient = new ContentValues();
+            patient.put("card_no", nextCardNo(db));
+            patient.put("full_name", cleanName);
+            patient.put("phone", safe(phone).trim());
+            patient.put("normalized_phone", normalizedPhone);
+            patient.put("gender", safe(gender));
+            patient.put("age_text", safe(ageText).trim());
+            patient.put("created_at", now());
+            long patientId = db.insertOrThrow("patients", null, patient);
+            long visitId = insertVisit(db, patientId, type, fee, null);
+            audit(db, "CREATE_PATIENT", "patient", patientId, cleanName);
+            audit(db, "CREATE_VISIT", "visit", visitId, type);
+            db.setTransactionSuccessful();
+            return new RegistrationResult(0, patientId, visitId);
+        } finally { db.endTransaction(); }
     }
 
     public boolean updatePatientMedical(long patientId, String ageText, String allergies,
@@ -313,21 +379,28 @@ public class ClinicDb extends SQLiteOpenHelper {
         if (!patientExists(patientId) || !ClinicWorkflowRules.isValidVisitType(type)) return -1;
         if (hasOpenVisit(patientId)) return -1;
         SQLiteDatabase db = getWritableDatabase();
+        Long previous = lastCompletedVisitId(db, patientId);
+        long id = insertVisit(db, patientId, type, fee,
+                NEW.equals(type) ? null : previous);
+        audit(db, "CREATE_VISIT", "visit", id, type);
+        return id;
+    }
+
+    private long insertVisit(SQLiteDatabase db, long patientId, String type, int fee, Long followupOf) {
         ContentValues v = new ContentValues();
         v.put("patient_id", patientId);
         v.put("visit_type", type);
         v.put("status", REGISTERED);
         v.put("fee", Math.max(0, fee));
         v.put("paid_amount", 0);
+        if (followupOf != null) v.put("followup_of_visit_id", followupOf);
         v.put("created_at", now());
-        long id = db.insertOrThrow("visits", null, v);
-        audit(db, "CREATE_VISIT", "visit", id, type);
-        return id;
+        return db.insertOrThrow("visits", null, v);
     }
 
     public boolean hasOpenVisit(long patientId) {
         if (!(can("view_patients") || can("manage_queue") || can("register_visits"))) return false;
-        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE patient_id=? AND status<>?", new String[]{String.valueOf(patientId), COMPLETED});
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE patient_id=? AND status NOT IN (?,?)", new String[]{String.valueOf(patientId), COMPLETED, CANCELLED});
         boolean result = c.moveToFirst() && c.getInt(0) > 0;
         c.close();
         return result;
@@ -343,20 +416,44 @@ public class ClinicDb extends SQLiteOpenHelper {
         return changed > 0;
     }
 
+    public boolean updateVisitRegistration(long visitId, String type, int fee) {
+        if (!can("register_visits") || !ClinicWorkflowRules.isValidVisitType(type)) return false;
+        ContentValues v = new ContentValues();
+        v.put("visit_type", type); v.put("fee", Math.max(0, fee));
+        int changed = getWritableDatabase().update("visits", v, "id=? AND status=?",
+                new String[]{String.valueOf(visitId), REGISTERED});
+        if (changed > 0) audit(getWritableDatabase(), "EDIT_VISIT", "visit", visitId, type);
+        return changed > 0;
+    }
+
     public boolean startVisit(long visitId) {
         if (!can("manage_queue")) return false;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("status", IN_CONSULT);
         v.put("started_at", now());
+        v.put("assigned_doctor_user_id", auth.userId());
+        v.put("assigned_doctor_name", auth.memberDisplayName());
         int changed = db.update("visits", v, "id=? AND status=?", new String[]{String.valueOf(visitId), WAITING});
         if (changed > 0) audit(db, "START_VISIT", "visit", visitId, "");
         return changed > 0;
     }
 
     public boolean saveClinical(long visitId, String complaint, String exam, String diagnosis, String labs, String treatment, String followup, boolean complete) {
+        return saveClinical(visitId, complaint, exam, diagnosis, labs, treatment, followup,
+                "", "", "", "", "", "", complete);
+    }
+
+    public boolean saveClinical(long visitId, String complaint, String exam, String diagnosis,
+            String labs, String treatment, String followup, String temperature,
+            String bloodPressure, String pulse, String weight, String oxygen,
+            String medications, boolean complete) {
         if (!can("edit_clinical")) return false;
         SQLiteDatabase db = getWritableDatabase();
+        Visit current = getVisitInternal(db, visitId);
+        if (current == null || !IN_CONSULT.equals(current.status)) return false;
+        if (complete && !ClinicWorkflowRules.canCompleteClinical(
+                current.type, complaint, diagnosis, labs)) return false;
         ContentValues v = new ContentValues();
         v.put("complaint", safe(complaint));
         v.put("exam", safe(exam));
@@ -364,6 +461,13 @@ public class ClinicDb extends SQLiteOpenHelper {
         v.put("labs", safe(labs));
         v.put("treatment", safe(treatment));
         v.put("followup", safe(followup));
+        v.put("temperature", safe(temperature).trim());
+        v.put("blood_pressure", safe(bloodPressure).trim());
+        v.put("pulse", safe(pulse).trim());
+        v.put("weight", safe(weight).trim());
+        v.put("oxygen", safe(oxygen).trim());
+        v.put("medications_text", safe(medications).trim());
+        v.put("draft_saved_at", now());
         if (complete) {
             v.put("status", COMPLETED);
             v.put("completed_at", now());
@@ -375,6 +479,40 @@ public class ClinicDb extends SQLiteOpenHelper {
         return changed > 0;
     }
 
+    public boolean cancelVisit(long visitId, String reason) {
+        if (!can("manage_queue") || safe(reason).trim().length() < 3) return false;
+        ContentValues v = new ContentValues();
+        v.put("status", CANCELLED); v.put("cancellation_reason", safe(reason).trim());
+        v.put("cancelled_at", now());
+        int changed = getWritableDatabase().update("visits", v,
+                "id=? AND paid_amount=0 AND status IN (?,?)",
+                new String[]{String.valueOf(visitId), REGISTERED, WAITING});
+        if (changed > 0) audit(getWritableDatabase(), "CANCEL_VISIT", "visit", visitId, reason);
+        return changed > 0;
+    }
+
+    public boolean reopenVisit(long visitId) {
+        if (!can("manage_queue") || isTodayClosedInternal()) return false;
+        ContentValues v = new ContentValues();
+        v.put("status", WAITING); v.put("reopened_at", now());
+        v.put("cancellation_reason", ""); v.putNull("cancelled_at");
+        int changed = getWritableDatabase().update("visits", v, "id=? AND status=?",
+                new String[]{String.valueOf(visitId), CANCELLED});
+        if (changed > 0) audit(getWritableDatabase(), "REOPEN_VISIT", "visit", visitId, "");
+        return changed > 0;
+    }
+
+    public boolean transferVisit(long visitId) {
+        if (!can("edit_clinical")) return false;
+        ContentValues v = new ContentValues();
+        v.put("status", WAITING); v.put("assigned_doctor_user_id", "");
+        v.put("assigned_doctor_name", ""); v.putNull("started_at");
+        int changed = getWritableDatabase().update("visits", v, "id=? AND status=?",
+                new String[]{String.valueOf(visitId), IN_CONSULT});
+        if (changed > 0) audit(getWritableDatabase(), "TRANSFER_VISIT", "visit", visitId, "");
+        return changed > 0;
+    }
+
     public boolean recordPayment(long visitId, int requestedAmount, String method) {
         if (!can("record_payments")) return false;
         if (isTodayClosedInternal()) return false;
@@ -382,7 +520,7 @@ public class ClinicDb extends SQLiteOpenHelper {
         db.beginTransaction();
         try {
             Visit visit = getVisitInternal(db, visitId);
-            if (visit == null) return false;
+            if (visit == null || CANCELLED.equals(visit.status)) return false;
             int remaining = Math.max(0, visit.fee - visit.paidAmount);
             if (!ClinicWorkflowRules.canRecordPayment(requestedAmount, remaining, false)) return false;
 
@@ -422,6 +560,13 @@ public class ClinicDb extends SQLiteOpenHelper {
         return p;
     }
 
+    public Patient findPatientByPhone(String phone) {
+        String normalized = ClinicWorkflowRules.normalizePhone(phone);
+        if (normalized.isEmpty()) return null;
+        Long id = patientIdByPhone(getReadableDatabase(), normalized);
+        return id == null ? null : getPatient(id);
+    }
+
     public List<Patient> searchPatients(String query) {
         List<Patient> out = new ArrayList<>();
         if (!can("view_patients")) return out;
@@ -444,12 +589,14 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public List<Visit> openQueue() {
         if (!canQueueRead()) return new ArrayList<>();
-        return queryVisits("WHERE v.status<>? ORDER BY v.id ASC", new String[]{COMPLETED});
+        return queryVisits("WHERE v.status NOT IN (?,?) ORDER BY v.id ASC", new String[]{COMPLETED, CANCELLED});
     }
 
     public List<Visit> doctorQueue() {
         if (!can("view_clinical")) return new ArrayList<>();
-        return queryVisits("WHERE v.status IN (?,?) ORDER BY CASE v.status WHEN 'IN_CONSULT' THEN 0 ELSE 1 END, v.id ASC", new String[]{IN_CONSULT, WAITING});
+        return queryVisits("WHERE v.status=? OR (v.status=? AND v.assigned_doctor_user_id=?) " +
+                "ORDER BY CASE v.status WHEN 'IN_CONSULT' THEN 0 ELSE 1 END, v.id ASC",
+                new String[]{WAITING, IN_CONSULT, auth.userId()});
     }
 
     public List<Visit> visitsForPatient(long patientId) {
@@ -457,14 +604,19 @@ public class ClinicDb extends SQLiteOpenHelper {
         return queryVisits("WHERE v.patient_id=? ORDER BY v.id DESC", new String[]{String.valueOf(patientId)});
     }
 
+    public List<Visit> cancelledVisits() {
+        if (!canQueueRead()) return new ArrayList<>();
+        return queryVisits("WHERE v.status=? ORDER BY v.id DESC LIMIT 50", new String[]{CANCELLED});
+    }
+
     public List<Visit> unpaidToday() {
         if (!(can("view_finance") || can("record_payments"))) return new ArrayList<>();
-        return queryVisits("WHERE date(v.created_at)=date('now','localtime') AND v.fee>v.paid_amount ORDER BY v.id ASC", new String[]{});
+        return queryVisits("WHERE v.status<>? AND date(v.created_at)=date('now','localtime') AND v.fee>v.paid_amount ORDER BY v.id ASC", new String[]{CANCELLED});
     }
 
     private List<Visit> queryVisits(String where, String[] args) {
         List<Visit> out = new ArrayList<>();
-        String sql = "SELECT v.id,v.patient_id,v.visit_type,v.status,v.fee,v.paid_amount,v.complaint,v.exam,v.diagnosis,v.labs,v.treatment,v.followup,v.created_at,v.started_at,v.completed_at,p.full_name,p.card_no FROM visits v JOIN patients p ON p.id=v.patient_id " + where;
+        String sql = visitSelect() + where;
         Cursor c = getReadableDatabase().rawQuery(sql, args);
         while (c.moveToNext()) out.add(sanitizeClinical(visitFrom(c)));
         c.close();
@@ -476,7 +628,7 @@ public class ClinicDb extends SQLiteOpenHelper {
         Cursor c = getReadableDatabase().rawQuery(
                 "SELECT COUNT(*), COALESCE(SUM(fee),0), COALESCE(SUM(CASE WHEN fee=0 THEN 1 ELSE 0 END),0), " +
                         "COALESCE(SUM(CASE WHEN fee>paid_amount THEN fee-paid_amount ELSE 0 END),0) " +
-                        "FROM visits WHERE date(created_at)=date('now','localtime')", null);
+                        "FROM visits WHERE status<>? AND date(created_at)=date('now','localtime')", new String[]{CANCELLED});
         if (c.moveToFirst()) {
             s.totalVisits = c.getInt(0);
             if (canFinanceRead()) {
@@ -546,7 +698,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private int openQueueCountInternal() {
-        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status<>?", new String[]{COMPLETED});
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status NOT IN (?,?)", new String[]{COMPLETED, CANCELLED});
         int count = c.moveToFirst() ? c.getInt(0) : 0;
         c.close();
         return count;
@@ -559,23 +711,33 @@ public class ClinicDb extends SQLiteOpenHelper {
         return closed;
     }
 
-    private int nextCardNo() {
-        SQLiteDatabase db = getWritableDatabase();
-        db.beginTransaction();
-        try {
+    private int nextCardNo(SQLiteDatabase db) {
             long next = metaLong(db, "card_range_next", 0);
             long end = metaLong(db, "card_range_end", -1);
             if (next > 0 && next <= end) {
                 putMeta(db, "card_range_next", String.valueOf(next + 1));
-                db.setTransactionSuccessful();
                 return (int)Math.min(Integer.MAX_VALUE, next);
             }
             long temporary = metaLong(db, "temporary_card_next", -1);
             if (temporary >= 0) temporary = -1;
             putMeta(db, "temporary_card_next", String.valueOf(temporary - 1));
-            db.setTransactionSuccessful();
             return (int)Math.max(Integer.MIN_VALUE, temporary);
-        } finally { db.endTransaction(); }
+    }
+
+    private Long patientIdByPhone(SQLiteDatabase db, String normalizedPhone) {
+        Cursor c = db.rawQuery("SELECT id FROM patients WHERE normalized_phone=? LIMIT 1",
+                new String[]{normalizedPhone});
+        Long id = c.moveToFirst() ? c.getLong(0) : null;
+        c.close();
+        return id;
+    }
+
+    private Long lastCompletedVisitId(SQLiteDatabase db, long patientId) {
+        Cursor c = db.rawQuery("SELECT id FROM visits WHERE patient_id=? AND status=? ORDER BY id DESC LIMIT 1",
+                new String[]{String.valueOf(patientId), COMPLETED});
+        Long id = c.moveToFirst() ? c.getLong(0) : null;
+        c.close();
+        return id;
     }
 
     private static long metaLong(SQLiteDatabase db, String key, long fallback) {
@@ -599,7 +761,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private Visit getVisitInternal(SQLiteDatabase db, long id) {
-        Cursor c = db.rawQuery("SELECT v.id,v.patient_id,v.visit_type,v.status,v.fee,v.paid_amount,v.complaint,v.exam,v.diagnosis,v.labs,v.treatment,v.followup,v.created_at,v.started_at,v.completed_at,p.full_name,p.card_no FROM visits v JOIN patients p ON p.id=v.patient_id WHERE v.id=?", new String[]{String.valueOf(id)});
+        Cursor c = db.rawQuery(visitSelect() + "WHERE v.id=?", new String[]{String.valueOf(id)});
         Visit v = c.moveToFirst() ? visitFrom(c) : null;
         c.close();
         return v;
@@ -624,7 +786,26 @@ public class ClinicDb extends SQLiteOpenHelper {
         v.completedAt = safe(c.getString(14));
         v.patientName = safe(c.getString(15));
         v.cardNo = c.getInt(16);
+        v.assignedDoctorUserId = safe(c.getString(17));
+        v.assignedDoctorName = safe(c.getString(18));
+        if (!c.isNull(19)) v.followupOfVisitId = c.getLong(19);
+        v.cancellationReason = safe(c.getString(20));
+        v.cancelledAt = safe(c.getString(21));
+        v.reopenedAt = safe(c.getString(22));
+        v.temperature = safe(c.getString(23));
+        v.bloodPressure = safe(c.getString(24));
+        v.pulse = safe(c.getString(25));
+        v.weight = safe(c.getString(26));
+        v.oxygen = safe(c.getString(27));
+        v.medications = safe(c.getString(28));
+        v.draftSavedAt = safe(c.getString(29));
         return v;
+    }
+
+    private static String visitSelect() {
+        return "SELECT v.id,v.patient_id,v.visit_type,v.status,v.fee,v.paid_amount,v.complaint,v.exam,v.diagnosis,v.labs,v.treatment,v.followup,v.created_at,v.started_at,v.completed_at,p.full_name,p.card_no," +
+                "v.assigned_doctor_user_id,v.assigned_doctor_name,v.followup_of_visit_id,v.cancellation_reason,v.cancelled_at,v.reopened_at,v.temperature,v.blood_pressure,v.pulse,v.weight,v.oxygen,v.medications_text,v.draft_saved_at " +
+                "FROM visits v JOIN patients p ON p.id=v.patient_id ";
     }
 
     private Visit sanitizeClinical(Visit v) {
@@ -674,10 +855,22 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public static class Visit {
-        public long id, patientId;
+        public long id, patientId, followupOfVisitId;
         public int cardNo, fee, paidAmount;
         public String patientName = "", type = "", status = "", complaint = "", exam = "", diagnosis = "", labs = "", treatment = "", followup = "", createdAt = "", startedAt = "", completedAt = "";
+        public String assignedDoctorUserId = "", assignedDoctorName = "", cancellationReason = "", cancelledAt = "", reopenedAt = "";
+        public String temperature = "", bloodPressure = "", pulse = "", weight = "", oxygen = "", medications = "", draftSavedAt = "";
         public int remaining() { return Math.max(0, fee - paidAmount); }
+    }
+
+    public static final class RegistrationResult {
+        public final int code;
+        public final long patientId, visitId;
+        RegistrationResult(int code, long patientId, long visitId) {
+            this.code = code; this.patientId = patientId; this.visitId = visitId;
+        }
+        static RegistrationResult failed(int code) { return new RegistrationResult(code, -1, -1); }
+        public boolean success() { return code == 0 && patientId > 0 && visitId > 0; }
     }
 
     public static class Stats {

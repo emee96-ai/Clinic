@@ -180,8 +180,11 @@ public final class ResilientRemoteSync {
 
         JSONObject body = new JSONObject(local.toString());
         body.remove("patient_sync_key");
-        String[] clinical = {"complaint", "exam", "diagnosis", "labs", "treatment", "followup"};
+        String[] clinical = {"complaint", "exam", "diagnosis", "labs", "treatment", "followup",
+                "temperature", "blood_pressure", "pulse", "weight", "oxygen", "medications_text"};
         for (String key : clinical) body.remove(key);
+        if (body.optString("assigned_doctor_user_id", "").isEmpty())
+            body.put("assigned_doctor_user_id", JSONObject.NULL);
         body.put("clinic_id", clinicId);
         body.put("patient_id", patientId);
         body.put("source_device_id", deviceId);
@@ -201,6 +204,12 @@ public final class ResilientRemoteSync {
             clinicalBody.put("labs", local.optString("labs", ""));
             clinicalBody.put("treatment", local.optString("treatment", ""));
             clinicalBody.put("followup", local.optString("followup", ""));
+            clinicalBody.put("temperature", local.optString("temperature", ""));
+            clinicalBody.put("blood_pressure", local.optString("blood_pressure", ""));
+            clinicalBody.put("pulse", local.optString("pulse", ""));
+            clinicalBody.put("weight", local.optString("weight", ""));
+            clinicalBody.put("oxygen", local.optString("oxygen", ""));
+            clinicalBody.put("medications_text", local.optString("medications_text", ""));
             clinicalBody.put("updated_by", auth.userId());
             Response clinicalResult = request("POST", "/rest/v1/clinical_records?on_conflict=visit_id",
                     clinicalBody.toString(), "resolution=merge-duplicates,return=minimal");
@@ -326,7 +335,7 @@ public final class ResilientRemoteSync {
             path = "/rest/v1/patients?select=" + enc(select)
                     + "&clinic_id=eq." + enc(clinicId) + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("visit".equals(type)) {
-            String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,record_version,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
+            String select = visitSelect();
             path = "/rest/v1/visits?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
                     + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("payment".equals(type)) {
@@ -353,7 +362,7 @@ public final class ResilientRemoteSync {
 
     private void pullVisits(String clinicId) throws Exception {
         if (!(auth.can("manage_queue") || auth.can("view_clinical"))) return;
-        String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,record_version,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
+        String select = visitSelect();
         pullPaged("visit", "visits_cursor", clinicId, "visits", select);
     }
 
@@ -422,9 +431,17 @@ public final class ResilientRemoteSync {
             row.put("labs", clinical.optString("labs", ""));
             row.put("treatment", clinical.optString("treatment", ""));
             row.put("followup", clinical.optString("followup", ""));
+            row.put("temperature", clinical.optString("temperature", ""));
+            row.put("blood_pressure", clinical.optString("blood_pressure", ""));
+            row.put("pulse", clinical.optString("pulse", ""));
+            row.put("weight", clinical.optString("weight", ""));
+            row.put("oxygen", clinical.optString("oxygen", ""));
+            row.put("medications_text", clinical.optString("medications_text", ""));
         } else {
             row.put("complaint", ""); row.put("exam", ""); row.put("diagnosis", "");
             row.put("labs", ""); row.put("treatment", ""); row.put("followup", "");
+            row.put("temperature", ""); row.put("blood_pressure", ""); row.put("pulse", "");
+            row.put("weight", ""); row.put("oxygen", ""); row.put("medications_text", "");
         }
         row.remove("clinical");
     }
@@ -450,6 +467,14 @@ public final class ResilientRemoteSync {
     private static void stripMedical(JSONObject body) {
         body.remove("age_text"); body.remove("allergies");
         body.remove("chronic_conditions"); body.remove("current_medications");
+    }
+
+    private static String visitSelect() {
+        return "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at," +
+                "assigned_doctor_user_id,assigned_doctor_name,cancellation_reason,cancelled_at,reopened_at," +
+                "updated_at,client_change_id,source_device_id,record_version,patient:patients(sync_key)," +
+                "clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup," +
+                "temperature,blood_pressure,pulse,weight,oxygen,medications_text)";
     }
 
     private void applyRemote(String type, JSONObject row) {

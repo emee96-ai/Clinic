@@ -18,10 +18,10 @@ import java.util.Set;
 
 /** Creates and restores logical clinic backups without copying auth tokens or device secrets. */
 public final class ClinicBackupManager {
-    private static final int FORMAT = 1;
+    private static final int FORMAT = 2;
 
-    private static final String[] PATIENT_COLS = {"id","card_no","full_name","phone","gender","age_text","allergies","chronic_conditions","current_medications","created_at"};
-    private static final String[] VISIT_COLS = {"id","patient_id","visit_type","status","fee","paid_amount","complaint","exam","diagnosis","labs","treatment","followup","created_at","started_at","completed_at"};
+    private static final String[] PATIENT_COLS = {"id","card_no","full_name","phone","normalized_phone","gender","age_text","allergies","chronic_conditions","current_medications","created_at"};
+    private static final String[] VISIT_COLS = {"id","patient_id","visit_type","status","fee","paid_amount","complaint","exam","diagnosis","labs","treatment","followup","assigned_doctor_user_id","assigned_doctor_name","followup_of_visit_id","cancellation_reason","cancelled_at","reopened_at","temperature","blood_pressure","pulse","weight","oxygen","medications_text","draft_saved_at","created_at","started_at","completed_at"};
     private static final String[] PAYMENT_COLS = {"id","visit_id","amount","method","created_at"};
     private static final String[] CLOSURE_COLS = {"id","day","total_visits","total_charges","total_paid","total_waived","outstanding","closed_at"};
     private static final String[] AUDIT_COLS = {"id","action","entity_type","entity_id","details","actor_user_id","actor_display_name","actor_role","created_at"};
@@ -58,8 +58,8 @@ public final class ClinicBackupManager {
 
         SQLiteDatabase db = helper.getReadableDatabase();
         JSONObject data = new JSONObject();
-        data.put("patients", query(db, "SELECT id,card_no,full_name,phone,gender,age_text,allergies,chronic_conditions,current_medications,created_at FROM patients ORDER BY id", PATIENT_COLS));
-        data.put("visits", query(db, "SELECT id,patient_id,visit_type,status,fee,paid_amount,complaint,exam,diagnosis,labs,treatment,followup,created_at,started_at,completed_at FROM visits ORDER BY id", VISIT_COLS));
+        data.put("patients", query(db, "SELECT id,card_no,full_name,phone,normalized_phone,gender,age_text,allergies,chronic_conditions,current_medications,created_at FROM patients ORDER BY id", PATIENT_COLS));
+        data.put("visits", query(db, "SELECT id,patient_id,visit_type,status,fee,paid_amount,complaint,exam,diagnosis,labs,treatment,followup,assigned_doctor_user_id,assigned_doctor_name,followup_of_visit_id,cancellation_reason,cancelled_at,reopened_at,temperature,blood_pressure,pulse,weight,oxygen,medications_text,draft_saved_at,created_at,started_at,completed_at FROM visits ORDER BY id", VISIT_COLS));
         data.put("payments", query(db, "SELECT id,visit_id,amount,method,created_at FROM payments ORDER BY id", PAYMENT_COLS));
         data.put("day_closures", query(db, "SELECT id,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at FROM day_closures ORDER BY id", CLOSURE_COLS));
         data.put("audit_log", query(db, "SELECT id,action,entity_type,entity_id,details,actor_user_id,actor_display_name,actor_role,created_at FROM audit_log ORDER BY id", AUDIT_COLS));
@@ -102,6 +102,7 @@ public final class ClinicBackupManager {
             db.delete("day_closures", null, null);
 
             insertRows(db, "patients", patients, PATIENT_COLS);
+            normalizeRestoredPhones(db);
             insertRows(db, "visits", visits, VISIT_COLS);
             insertRows(db, "payments", payments, PAYMENT_COLS);
             insertRows(db, "day_closures", closures, CLOSURE_COLS);
@@ -176,7 +177,8 @@ public final class ClinicBackupManager {
     }
 
     private static void validateBackup(JSONObject root, boolean strict) throws Exception {
-        if (root.optInt("format", -1) != FORMAT || !"Clinic".equals(root.optString("app", "")))
+        int format = root.optInt("format", -1);
+        if ((format < 1 || format > FORMAT) || !"Clinic".equals(root.optString("app", "")))
             throw new IllegalArgumentException("unsupported_backup_format");
         JSONObject data = root.optJSONObject("data");
         if (data == null) throw new IllegalArgumentException("invalid_backup");
@@ -205,6 +207,17 @@ public final class ClinicBackupManager {
             throw new IllegalStateException("invalid_backup_visit_patient");
         if (count(db, "SELECT COUNT(*) FROM payments x LEFT JOIN visits v ON v.id=x.visit_id WHERE v.id IS NULL") != 0)
             throw new IllegalStateException("invalid_backup_payment_visit");
+    }
+
+    private static void normalizeRestoredPhones(SQLiteDatabase db) {
+        Cursor c = db.rawQuery("SELECT id,phone FROM patients", null);
+        try {
+            while (c.moveToNext()) {
+                ContentValues v = new ContentValues();
+                v.put("normalized_phone", ClinicWorkflowRules.normalizePhone(c.getString(1)));
+                db.update("patients", v, "id=?", new String[]{String.valueOf(c.getLong(0))});
+            }
+        } finally { c.close(); }
     }
 
     private static long count(SQLiteDatabase db, String sql) {

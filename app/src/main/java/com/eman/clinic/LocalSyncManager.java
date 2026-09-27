@@ -422,6 +422,17 @@ public final class LocalSyncManager {
         putStringIfPresent(v, row, "labs");
         putStringIfPresent(v, row, "treatment");
         putStringIfPresent(v, row, "followup");
+        putStringIfPresent(v, row, "assigned_doctor_user_id");
+        putStringIfPresent(v, row, "assigned_doctor_name");
+        putStringIfPresent(v, row, "cancellation_reason");
+        putNullableStringIfPresent(v, row, "cancelled_at");
+        putNullableStringIfPresent(v, row, "reopened_at");
+        putStringIfPresent(v, row, "temperature");
+        putStringIfPresent(v, row, "blood_pressure");
+        putStringIfPresent(v, row, "pulse");
+        putStringIfPresent(v, row, "weight");
+        putStringIfPresent(v, row, "oxygen");
+        putStringIfPresent(v, row, "medications_text");
         putStringIfPresent(v, row, "created_at");
         putNullableStringIfPresent(v, row, "started_at");
         putNullableStringIfPresent(v, row, "completed_at");
@@ -466,6 +477,12 @@ public final class LocalSyncManager {
         payload.remove("labs");
         payload.remove("treatment");
         payload.remove("followup");
+        payload.remove("temperature");
+        payload.remove("blood_pressure");
+        payload.remove("pulse");
+        payload.remove("weight");
+        payload.remove("oxygen");
+        payload.remove("medications_text");
     }
 
     private static boolean canSend(AuthStore auth, String type) {
