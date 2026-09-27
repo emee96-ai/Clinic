@@ -30,7 +30,7 @@ import java.util.Map;
  */
 public final class ResilientRemoteSync {
     private static final int PUSH_LIMIT = 120;
-    private static final int PAGE_SIZE = 500;
+    private static final int PAGE_SIZE = 200;
 
     private final Context context;
     private final SyncStore store;
@@ -53,41 +53,49 @@ public final class ResilientRemoteSync {
         if (!api.refreshEntitlement()) return 0;
 
         String clinicId = auth.clinicId();
+        ensureCardNumberRange();
         List<SyncStore.SyncItem> pending = store.pending(PUSH_LIMIT);
         Map<String, JSONObject> versions = loadVersions(clinicId, pending);
         int conflicts = 0;
 
         for (SyncStore.SyncItem item : pending) {
-            JSONObject payload = new JSONObject(item.payload);
-            JSONObject remote = "day_closure".equals(item.entityType)
-                    ? fetchClosureVersion(clinicId, payload.optString("day", ""))
-                    : versions.get(versionMapKey(item.entityType, item.syncKey));
+            store.markSyncing(item);
+            try {
+                JSONObject payload = new JSONObject(item.payload);
+                JSONObject remote = "day_closure".equals(item.entityType)
+                        ? fetchClosureVersion(clinicId, payload.optString("day", ""))
+                        : versions.get(versionMapKey(item.entityType, item.syncKey));
 
-            String localChangeId = localChangeId(item);
-            String baseChangeId = store.meta(baseKey(item.entityType, item.syncKey));
-            boolean remoteExists = remote != null;
-            String remoteChangeId = remoteExists ? remote.optString("client_change_id", "") : "";
+                String localChangeId = localChangeId(item);
+                String baseChangeId = store.meta(baseKey(item.entityType, item.syncKey));
+                boolean remoteExists = remote != null;
+                String remoteChangeId = remoteExists ? remote.optString("client_change_id", "") : "";
 
-            SyncConflictPolicy.Decision decision = SyncConflictPolicy.decide(
-                    remoteExists, remoteChangeId, baseChangeId, localChangeId);
+                SyncConflictPolicy.Decision decision = SyncConflictPolicy.decide(
+                        remoteExists, remoteChangeId, baseChangeId, localChangeId);
 
-            if (decision == SyncConflictPolicy.Decision.CONFLICT) {
-                JSONObject fullRemote = fetchRemoteEntity(item.entityType, clinicId, item.syncKey, payload);
-                if (fullRemote == null) throw new IOException("remote conflict row unavailable");
-                recordConflict(item, fullRemote);
-                store.markSynced(item); // local version is preserved in sync_conflicts before replacement.
-                applyRemote(item.entityType, fullRemote);
-                store.putMeta(baseKey(item.entityType, fullRemote.optString("sync_key", item.syncKey)),
-                        fullRemote.optString("client_change_id", remoteChangeId));
-                conflicts++;
-                continue;
-            }
+                if (decision == SyncConflictPolicy.Decision.CONFLICT) {
+                    preserveConflict(item, clinicId, payload, remoteChangeId);
+                    conflicts++;
+                    continue;
+                }
 
-            String originDevice = originDevice(item);
-            boolean pushed = pushEntity(item.entityType, clinicId, originDevice, localChangeId, payload);
-            if (pushed) {
+                String originDevice = originDevice(item);
+                JSONObject pushed = pushEntity(item.entityType, clinicId, originDevice,
+                        localChangeId, payload, remote);
+                if (pushed == null) throw new IOException("sync write was not accepted");
                 store.putMeta(baseKey(item.entityType, item.syncKey), localChangeId);
+                store.setRemoteVersion(item.entityType, item.syncKey,
+                        pushed.optLong("record_version", remote == null ? 1 : remote.optLong("record_version", 1)));
+                if ("patient".equals(item.entityType))
+                    store.updatePatientCard(item.syncKey, pushed.optInt("card_no", payload.optInt("card_no", 0)));
                 store.markSynced(item);
+            } catch (SyncConflictException conflict) {
+                JSONObject payload = new JSONObject(item.payload);
+                preserveConflict(item, clinicId, payload, "");
+                conflicts++;
+            } catch (Exception error) {
+                store.markFailed(item, error.getMessage());
             }
         }
 
@@ -95,6 +103,7 @@ public final class ResilientRemoteSync {
         pullVisits(clinicId);
         pullPayments(clinicId);
         pullClosures(clinicId);
+        store.noteSyncSuccess();
         return conflicts;
     }
 
@@ -108,6 +117,9 @@ public final class ResilientRemoteSync {
         for (Map.Entry<String, List<String>> e : grouped.entrySet()) {
             String table = tableFor(e.getKey());
             if (table.isEmpty() || e.getValue().isEmpty()) continue;
+            String versionFields = "patient".equals(e.getKey())
+                    ? "sync_key,client_change_id,source_device_id,updated_at,record_version,card_no"
+                    : "sync_key,client_change_id,source_device_id,updated_at,record_version";
             for (int from = 0; from < e.getValue().size(); from += 40) {
                 int to = Math.min(from + 40, e.getValue().size());
                 StringBuilder in = new StringBuilder();
@@ -116,7 +128,7 @@ public final class ResilientRemoteSync {
                     in.append(e.getValue().get(i));
                 }
                 String path = "/rest/v1/" + table
-                        + "?select=sync_key,client_change_id,source_device_id,updated_at"
+                        + "?select=" + versionFields
                         + "&clinic_id=eq." + enc(clinicId)
                         + "&sync_key=in.(" + in + ")";
                 JSONArray rows = getArray(path);
@@ -131,41 +143,40 @@ public final class ResilientRemoteSync {
 
     private JSONObject fetchClosureVersion(String clinicId, String day) throws Exception {
         if (day == null || day.isEmpty()) return null;
-        String path = "/rest/v1/day_closures?select=sync_key,client_change_id,source_device_id,updated_at"
+        String path = "/rest/v1/day_closures?select=sync_key,client_change_id,source_device_id,updated_at,record_version"
                 + "&clinic_id=eq." + enc(clinicId) + "&day=eq." + enc(day) + "&limit=1";
         JSONArray a = getArray(path);
         return a.length() == 0 ? null : a.getJSONObject(0);
     }
 
-    private boolean pushEntity(String type, String clinicId, String originDevice,
-                               String changeId, JSONObject local) throws Exception {
-        if ("patient".equals(type)) return pushPatient(clinicId, originDevice, changeId, local);
-        if ("visit".equals(type)) return pushVisit(clinicId, originDevice, changeId, local);
-        if ("payment".equals(type)) return pushPayment(clinicId, originDevice, changeId, local);
-        if ("day_closure".equals(type)) return pushClosure(clinicId, originDevice, changeId, local);
-        return false;
+    private JSONObject pushEntity(String type, String clinicId, String originDevice,
+                                  String changeId, JSONObject local, JSONObject remote) throws Exception {
+        if ("patient".equals(type)) return pushPatient(clinicId, originDevice, changeId, local, remote);
+        if ("visit".equals(type)) return pushVisit(clinicId, originDevice, changeId, local, remote);
+        if ("payment".equals(type)) return pushPayment(clinicId, originDevice, changeId, local, remote);
+        if ("day_closure".equals(type)) return pushClosure(clinicId, originDevice, changeId, local, remote);
+        return null;
     }
 
-    private boolean pushPatient(String clinicId, String deviceId, String changeId, JSONObject local) throws Exception {
+    private JSONObject pushPatient(String clinicId, String deviceId, String changeId, JSONObject local, JSONObject remote) throws Exception {
         boolean identityAllowed = auth.can("edit_patients");
         boolean clinicalAllowed = auth.can("edit_clinical");
-        if (!identityAllowed && !clinicalAllowed) return false;
-        if (identityAllowed) {
-            JSONObject body = new JSONObject(local.toString());
-            stripMedical(body);
-            body.put("clinic_id", clinicId);
-            body.put("source_device_id", deviceId);
-            body.put("client_change_id", changeId);
-            if (!ok(request("POST", "/rest/v1/patients?on_conflict=clinic_id,sync_key", body.toString(),
-                    "resolution=merge-duplicates,return=minimal"))) return false;
-        }
-        return !clinicalAllowed || api.updatePatientMedicalSummary(clinicId, local);
+        if (!identityAllowed && !clinicalAllowed) return null;
+        JSONObject body = new JSONObject(local.toString());
+        stripMedical(body);
+        body.put("clinic_id", clinicId);
+        body.put("source_device_id", deviceId);
+        body.put("client_change_id", changeId);
+        JSONObject written = versionedWrite("patients", clinicId, local.optString("sync_key", ""),
+                remote, changeId, body);
+        if (clinicalAllowed && !api.updatePatientMedicalSummary(clinicId, local)) return null;
+        return written;
     }
 
-    private boolean pushVisit(String clinicId, String deviceId, String changeId, JSONObject local) throws Exception {
-        if (!(auth.can("register_visits") || auth.can("manage_queue") || auth.can("edit_clinical"))) return false;
+    private JSONObject pushVisit(String clinicId, String deviceId, String changeId, JSONObject local, JSONObject remote) throws Exception {
+        if (!(auth.can("register_visits") || auth.can("manage_queue") || auth.can("edit_clinical"))) return null;
         String patientId = remoteId("patients", clinicId, local.optString("patient_sync_key", ""));
-        if (patientId.isEmpty()) return false;
+        if (patientId.isEmpty()) return null;
 
         JSONObject body = new JSONObject(local.toString());
         body.remove("patient_sync_key");
@@ -175,13 +186,12 @@ public final class ResilientRemoteSync {
         body.put("patient_id", patientId);
         body.put("source_device_id", deviceId);
         body.put("client_change_id", changeId);
-        Response visit = request("POST", "/rest/v1/visits?on_conflict=clinic_id,sync_key", body.toString(),
-                "resolution=merge-duplicates,return=minimal");
-        if (!ok(visit)) return false;
+        JSONObject written = versionedWrite("visits", clinicId, local.optString("sync_key", ""),
+                remote, changeId, body);
 
         if (auth.can("edit_clinical")) {
             String visitId = remoteId("visits", clinicId, local.optString("sync_key", ""));
-            if (visitId.isEmpty()) return false;
+            if (visitId.isEmpty()) return null;
             JSONObject clinicalBody = new JSONObject();
             clinicalBody.put("clinic_id", clinicId);
             clinicalBody.put("visit_id", visitId);
@@ -194,33 +204,112 @@ public final class ResilientRemoteSync {
             clinicalBody.put("updated_by", auth.userId());
             Response clinicalResult = request("POST", "/rest/v1/clinical_records?on_conflict=visit_id",
                     clinicalBody.toString(), "resolution=merge-duplicates,return=minimal");
-            if (!ok(clinicalResult)) return false;
+            if (!ok(clinicalResult)) return null;
         }
-        return true;
+        return written;
     }
 
-    private boolean pushPayment(String clinicId, String deviceId, String changeId, JSONObject local) throws Exception {
-        if (!auth.can("record_payments")) return false;
+    private JSONObject pushPayment(String clinicId, String deviceId, String changeId, JSONObject local, JSONObject remote) throws Exception {
+        if (!auth.can("record_payments")) return null;
         String visitId = remoteId("visits", clinicId, local.optString("visit_sync_key", ""));
-        if (visitId.isEmpty()) return false;
+        if (visitId.isEmpty()) return null;
         JSONObject body = new JSONObject(local.toString());
         body.remove("visit_sync_key");
         body.put("clinic_id", clinicId);
         body.put("visit_id", visitId);
         body.put("source_device_id", deviceId);
         body.put("client_change_id", changeId);
-        return ok(request("POST", "/rest/v1/payments?on_conflict=clinic_id,sync_key", body.toString(),
-                "resolution=merge-duplicates,return=minimal"));
+        return versionedWrite("payments", clinicId, local.optString("sync_key", ""),
+                remote, changeId, body);
     }
 
-    private boolean pushClosure(String clinicId, String deviceId, String changeId, JSONObject local) throws Exception {
-        if (!auth.can("close_day")) return false;
+    private JSONObject pushClosure(String clinicId, String deviceId, String changeId, JSONObject local, JSONObject remote) throws Exception {
+        if (!auth.can("close_day")) return null;
         JSONObject body = new JSONObject(local.toString());
         body.put("clinic_id", clinicId);
         body.put("source_device_id", deviceId);
         body.put("client_change_id", changeId);
-        return ok(request("POST", "/rest/v1/day_closures?on_conflict=clinic_id,day", body.toString(),
-                "resolution=merge-duplicates,return=minimal"));
+        return versionedWrite("day_closures", clinicId, local.optString("sync_key", ""),
+                remote, changeId, body);
+    }
+
+    private JSONObject versionedWrite(String table, String clinicId, String syncKey,
+                                      JSONObject remote, String changeId, JSONObject body) throws Exception {
+        if (remote != null && changeId.equals(remote.optString("client_change_id", ""))) return remote;
+
+        Response response;
+        String returning = "patients".equals(table)
+                ? "sync_key,record_version,card_no" : "sync_key,record_version";
+        if (remote == null) {
+            body.put("record_version", 1);
+            response = request("POST", "/rest/v1/" + table + "?select=" + returning,
+                    body.toString(), "return=representation");
+        } else {
+            long expected = store.remoteVersion(entityForTable(table), syncKey);
+            if (expected <= 0) expected = remote.optLong("record_version", 1);
+            body.put("record_version", expected + 1);
+            String path = "/rest/v1/" + table + "?select=" + returning
+                    + "&clinic_id=eq." + enc(clinicId)
+                    + "&sync_key=eq." + enc(syncKey)
+                    + "&record_version=eq." + expected;
+            response = request("PATCH", path, body.toString(), "return=representation");
+        }
+        if (response.code == 409) {
+            // A timeout or a simultaneous LAN-origin upload may mean the same logical
+            // change already committed. Re-read before declaring a real conflict.
+            JSONObject committed = fetchVersionRow(table, clinicId, syncKey);
+            if (committed != null
+                    && changeId.equals(committed.optString("client_change_id", ""))) {
+                return committed;
+            }
+            throw new SyncConflictException();
+        }
+        if (response.code == 400 && response.body.contains("sync_version_conflict"))
+            throw new SyncConflictException();
+        if (!ok(response)) throw new IOException(errorMessage(response));
+        JSONArray rows = new JSONArray(response.body);
+        if (rows.length() == 0) throw new SyncConflictException();
+        return rows.getJSONObject(0);
+    }
+
+    private JSONObject fetchVersionRow(String table, String clinicId, String syncKey) throws Exception {
+        String fields = "patients".equals(table)
+                ? "sync_key,client_change_id,record_version,card_no"
+                : "sync_key,client_change_id,record_version";
+        JSONArray rows = getArray("/rest/v1/" + table + "?select=" + fields
+                + "&clinic_id=eq." + enc(clinicId)
+                + "&sync_key=eq." + enc(syncKey) + "&limit=1");
+        return rows.length() == 0 ? null : rows.getJSONObject(0);
+    }
+
+    private void preserveConflict(SyncStore.SyncItem item, String clinicId,
+                                  JSONObject payload, String knownRemoteChangeId) throws Exception {
+        JSONObject fullRemote = fetchRemoteEntity(item.entityType, clinicId, item.syncKey, payload);
+        if (fullRemote == null) throw new IOException("remote conflict row unavailable");
+        recordConflict(item, fullRemote);
+        store.markSynced(item);
+        applyRemote(item.entityType, fullRemote);
+        String remoteKey = fullRemote.optString("sync_key", item.syncKey);
+        store.putMeta(baseKey(item.entityType, remoteKey),
+                fullRemote.optString("client_change_id", knownRemoteChangeId));
+        store.setRemoteVersion(item.entityType, remoteKey, fullRemote.optLong("record_version", 1));
+    }
+
+    private void ensureCardNumberRange() {
+        if (!auth.can("edit_patients") || store.remainingCardNumbers() >= 20) return;
+        try {
+            JSONObject range = api.reservePatientCardNumbers(store.deviceId(), 100);
+            store.saveCardRange(range.optLong("range_start", 0), range.optLong("range_end", -1));
+        } catch (Exception ignored) {
+            // Registration remains available with temporary negative numbers while offline.
+        }
+    }
+
+    private String entityForTable(String table) {
+        if ("patients".equals(table)) return "patient";
+        if ("visits".equals(table)) return "visit";
+        if ("payments".equals(table)) return "payment";
+        return "day_closure";
     }
 
     private String remoteId(String table, String clinicId, String syncKey) throws Exception {
@@ -233,20 +322,20 @@ public final class ResilientRemoteSync {
     private JSONObject fetchRemoteEntity(String type, String clinicId, String syncKey, JSONObject local) throws Exception {
         String path;
         if ("patient".equals(type)) {
-            String select = "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)";
+            String select = "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id,record_version,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)";
             path = "/rest/v1/patients?select=" + enc(select)
                     + "&clinic_id=eq." + enc(clinicId) + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("visit".equals(type)) {
-            String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
+            String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,record_version,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
             path = "/rest/v1/visits?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
                     + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("payment".equals(type)) {
-            String select = "sync_key,amount,method,created_at,updated_at,client_change_id,source_device_id,visit:visits(sync_key)";
+            String select = "sync_key,amount,method,created_at,updated_at,client_change_id,source_device_id,record_version,visit:visits(sync_key)";
             path = "/rest/v1/payments?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
                     + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("day_closure".equals(type)) {
             String day = local.optString("day", "");
-            path = "/rest/v1/day_closures?select=sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at,client_change_id,source_device_id"
+            path = "/rest/v1/day_closures?select=sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at,client_change_id,source_device_id,record_version"
                     + "&clinic_id=eq." + enc(clinicId) + "&day=eq." + enc(day) + "&limit=1";
         } else return null;
         JSONArray a = getArray(path);
@@ -259,37 +348,38 @@ public final class ResilientRemoteSync {
 
     private void pullPatients(String clinicId) throws Exception {
         pullPaged("patient", "patients_cursor", clinicId,
-                "patients", "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)");
+                "patients", "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id,record_version,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)");
     }
 
     private void pullVisits(String clinicId) throws Exception {
         if (!(auth.can("manage_queue") || auth.can("view_clinical"))) return;
-        String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
+        String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,record_version,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
         pullPaged("visit", "visits_cursor", clinicId, "visits", select);
     }
 
     private void pullPayments(String clinicId) throws Exception {
         if (!(auth.can("view_finance") || auth.can("record_payments"))) return;
-        String select = "sync_key,amount,method,created_at,updated_at,client_change_id,source_device_id,visit:visits(sync_key)";
+        String select = "sync_key,amount,method,created_at,updated_at,client_change_id,source_device_id,record_version,visit:visits(sync_key)";
         pullPaged("payment", "payments_cursor", clinicId, "payments", select);
     }
 
     private void pullClosures(String clinicId) throws Exception {
         if (!(auth.can("view_finance") || auth.can("close_day"))) return;
-        String select = "sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at,client_change_id,source_device_id";
+        String select = "sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at,client_change_id,source_device_id,record_version";
         pullPaged("day_closure", "closures_cursor", clinicId, "day_closures", select);
     }
 
     private void pullPaged(String type, String cursorKey, String clinicId, String table, String select) throws Exception {
         if ("patient".equals(type) && !auth.can("view_patients")) return;
         String cursor = store.meta(cursorKey);
+        String cursorSyncKey = store.meta(cursorKey + "_sync_key");
         String max = cursor;
-        int offset = 0;
+        String maxSyncKey = cursorSyncKey;
         while (true) {
             String path = "/rest/v1/" + table + "?select=" + enc(select)
                     + "&clinic_id=eq." + enc(clinicId)
-                    + cursorFilter(cursor)
-                    + "&order=updated_at.asc,sync_key.asc&limit=" + PAGE_SIZE + "&offset=" + offset;
+                    + cursorFilter(cursor, cursorSyncKey)
+                    + "&order=updated_at.asc,sync_key.asc&limit=" + PAGE_SIZE;
             JSONArray rows = getArray(path);
             for (int i = 0; i < rows.length(); i++) {
                 JSONObject row = rows.getJSONObject(i);
@@ -301,14 +391,22 @@ public final class ResilientRemoteSync {
                 if (!dirty) {
                     applyRemote(type, row);
                     store.putMeta(baseKey(type, syncKey), row.optString("client_change_id", ""));
+                    store.setRemoteVersion(type, syncKey, row.optLong("record_version", 1));
                 }
                 String updated = row.optString("updated_at", "");
-                if (!updated.isEmpty() && (max == null || max.isEmpty() || updated.compareTo(max) > 0)) max = updated;
+                if (!updated.isEmpty()) {
+                    max = updated;
+                    maxSyncKey = syncKey;
+                }
             }
             if (rows.length() < PAGE_SIZE) break;
-            offset += PAGE_SIZE;
+            cursor = max;
+            cursorSyncKey = maxSyncKey;
         }
-        if (max != null && !max.isEmpty()) store.putMeta(cursorKey, max);
+        if (max != null && !max.isEmpty()) {
+            store.putMeta(cursorKey, max);
+            store.putMeta(cursorKey + "_sync_key", maxSyncKey == null ? "" : maxSyncKey);
+        }
     }
 
     private void flattenVisit(JSONObject row) throws Exception {
@@ -378,7 +476,7 @@ public final class ResilientRemoteSync {
     private void installConflictStore() {
         db.getWritableDatabase().execSQL("CREATE TABLE IF NOT EXISTS sync_conflicts (" +
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, sync_key TEXT NOT NULL, " +
-                "local_payload TEXT NOT NULL, remote_payload TEXT NOT NULL, detected_at TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0)");
+                "local_payload TEXT NOT NULL, remote_payload TEXT NOT NULL, remote_version INTEGER NOT NULL DEFAULT 0, detected_at TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0)");
         db.getWritableDatabase().execSQL("CREATE INDEX IF NOT EXISTS idx_sync_conflicts_open ON sync_conflicts(resolved,detected_at)");
     }
 
@@ -391,6 +489,7 @@ public final class ResilientRemoteSync {
         v.put("sync_key", item.syncKey);
         v.put("local_payload", item.payload == null ? "{}" : item.payload);
         v.put("remote_payload", remote == null ? "{}" : remote.toString());
+        v.put("remote_version", remote == null ? 0 : remote.optLong("record_version", 0));
         v.put("detected_at", new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()));
         v.put("resolved", 0);
         writable.insert("sync_conflicts", null, v);
@@ -405,8 +504,12 @@ public final class ResilientRemoteSync {
         return "";
     }
 
-    private String cursorFilter(String cursor) {
-        return cursor == null || cursor.isEmpty() ? "" : "&updated_at=gt." + enc(cursor);
+    private String cursorFilter(String cursor, String syncKey) {
+        if (cursor == null || cursor.isEmpty()) return "";
+        if (syncKey == null || syncKey.isEmpty()) return "&updated_at=gt." + enc(cursor);
+        String expression = "(updated_at.gt." + cursor + ",and(updated_at.eq." + cursor
+                + ",sync_key.gt." + syncKey + "))";
+        return "&or=" + enc(expression);
     }
 
     private JSONArray getArray(String path) throws Exception {
@@ -477,4 +580,6 @@ public final class ResilientRemoteSync {
         final String body;
         Response(int code, String body) { this.code = code; this.body = body == null ? "" : body; }
     }
+
+    private static final class SyncConflictException extends Exception {}
 }

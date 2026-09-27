@@ -144,6 +144,17 @@ public final class SupabaseApi {
         return rows.length() == 0 ? new JSONObject() : rows.getJSONObject(0);
     }
 
+    public JSONObject reservePatientCardNumbers(String deviceId, int count) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("p_clinic_id", auth.clinicId());
+        body.put("p_device_id", deviceId == null ? "" : deviceId);
+        body.put("p_count", Math.max(20, Math.min(500, count)));
+        Response r = request("POST", "/rest/v1/rpc/reserve_patient_card_numbers", body.toString(), null);
+        if (!ok(r)) throw new IOException(errorMessage(r));
+        JSONArray rows = new JSONArray(r.body);
+        return rows.length() == 0 ? new JSONObject() : rows.getJSONObject(0);
+    }
+
     public JSONArray listMembers() throws Exception {
         String select = "id,user_id,role,active,display_name,permissions,joined_at";
         String path = "/rest/v1/clinic_members?select=" + enc(select) + "&clinic_id=eq." + enc(auth.clinicId()) + "&order=created_at.asc";

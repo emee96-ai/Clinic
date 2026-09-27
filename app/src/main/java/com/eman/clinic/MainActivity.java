@@ -153,10 +153,16 @@ public class MainActivity extends Activity {
 
         if (auth.hasRemoteIdentity()) {
             LinearLayout sync = card();
-            int pending = new SyncStore(this).pendingCount();
-            sync.addView(tv(pending == 0 ? "المزامنة محدثة ✓" : "بانتظار المزامنة: " + pending, 15, pending == 0 ? primary : warning, true));
+            SyncStore cloud = new SyncStore(this);
+            int pending = cloud.queuedCount();
+            int failed = cloud.failedCount();
+            int conflicts = cloud.conflictCount();
+            boolean syncHealthy = pending == 0 && failed == 0 && conflicts == 0;
+            String syncTitle = syncHealthy ? "المزامنة محدثة ✓"
+                    : "انتظار " + pending + " • فشل " + failed + " • تعارض " + conflicts;
+            sync.addView(tv(syncTitle, 15, syncHealthy ? primary : warning, true));
             sync.addView(tv(LocalSyncManager.status(this), 12, muted, false));
-            sync.setOnClickListener(v -> startActivity(new Intent(this, LocalSyncActivity.class)));
+            sync.setOnClickListener(v -> startActivity(new Intent(this, SyncIssuesActivity.class)));
             content.addView(sync);
         }
 
@@ -231,7 +237,7 @@ public class MainActivity extends Activity {
         head.addView(name, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         head.addView(chip(statusLabel(visit.status), statusColor(visit.status), Color.WHITE));
         card.addView(head);
-        card.addView(tv("كرت #" + visit.cardNo + "  •  " + typeLabel(visit.type), 14, muted, false));
+        card.addView(tv(cardLabel(visit.cardNo) + "  •  " + typeLabel(visit.type), 14, muted, false));
         if (ClinicDb.WAITING.equals(visit.status)) card.addView(tv("مدة الانتظار: " + waitingTime(visit.createdAt), 13, warning, true));
         if (visit.fee == 0) card.addView(tv("معفاة من الرسوم", 13, primary, true));
         else card.addView(tv("الرسوم: " + money(visit.fee) + "  |  المدفوع: " + money(visit.paidAmount), 13, muted, false));
@@ -266,7 +272,7 @@ public class MainActivity extends Activity {
         ClinicDb.Visit visit = db.getVisit(visitId);
         if (visit == null || !ClinicDb.IN_CONSULT.equals(visit.status)) { showDoctor(); return; }
         ClinicDb.Patient patient = db.getPatient(visit.patientId);
-        base("كشف المريض", "كرت #" + visit.cardNo + " • " + visit.patientName + " • " + typeLabel(visit.type), -1);
+        base("كشف المريض", cardLabel(visit.cardNo) + " • " + visit.patientName + " • " + typeLabel(visit.type), -1);
 
         LinearLayout identity = card();
         identity.addView(tv(visit.patientName, 21, ink, true));
@@ -419,7 +425,7 @@ public class MainActivity extends Activity {
         for (ClinicDb.Patient p : list) {
             LinearLayout c = card();
             c.addView(tv(p.name, 18, ink, true));
-            String sub = "كرت #" + p.cardNo;
+            String sub = cardLabel(p.cardNo);
             if (auth.can("view_clinical") && !safe(p.ageText).isEmpty()) sub += "  •  " + p.ageText;
             if (!safe(p.phone).isEmpty()) sub += "  •  " + p.phone;
             c.addView(tv(sub, 13, muted, false));
@@ -434,7 +440,7 @@ public class MainActivity extends Activity {
         base("ملف المريض", auth.can("view_clinical") ? "السجل الطبي والزيارات السابقة" : "بيانات المريض والزيارات", NAV_PATIENTS);
         LinearLayout profile = card();
         profile.addView(tv(p.name, 23, ink, true));
-        profile.addView(tv("رقم الكرت: #" + p.cardNo, 15, primary, true));
+        profile.addView(tv(cardLabel(p.cardNo), 15, primary, true));
         if (auth.can("view_clinical"))
             profile.addView(tv("العمر: " + (safe(p.ageText).isEmpty() ? "غير مسجل" : p.ageText), 14, muted, false));
         profile.addView(tv("الهاتف: " + (safe(p.phone).isEmpty() ? "غير مسجل" : p.phone), 14, muted, false));
@@ -497,7 +503,7 @@ public class MainActivity extends Activity {
         if (unpaid.isEmpty()) empty("ما في مبالغ معلّقة لليوم");
         for (ClinicDb.Visit visit : unpaid) {
             LinearLayout c = card();
-            c.addView(tv(visit.patientName + "  •  #" + visit.cardNo, 17, ink, true));
+            c.addView(tv(visit.patientName + "  •  " + cardLabel(visit.cardNo), 17, ink, true));
             c.addView(tv(typeLabel(visit.type), 13, muted, false));
             c.addView(tv("المتبقي: " + money(visit.remaining()), 15, warning, true));
             if (canCollect && !db.isOperationalDayClosed()) {
@@ -632,7 +638,7 @@ public class MainActivity extends Activity {
                     ClinicDb.Patient p = db.getPatient(patientId);
                     if (visitId == -2) { toast("تم حفظ الكرت لكن حساب اليوم اتقفل قبل إضافة الزيارة"); showPatientDetail(patientId); return; }
                     if (visitId <= 0) { toast("تم حفظ الكرت لكن تعذر إنشاء الزيارة"); showPatientDetail(patientId); return; }
-                    toast("تم التسجيل • كرت #" + (p == null ? "" : p.cardNo));
+                    toast("تم التسجيل • " + (p == null ? "" : cardLabel(p.cardNo)));
                     showQueue();
                 }).show();
     }
@@ -902,6 +908,10 @@ public class MainActivity extends Activity {
 
     private String money(int amount) {
         return NumberFormat.getIntegerInstance(new Locale("ar")).format(amount) + " ج.س";
+    }
+
+    private String cardLabel(int cardNo) {
+        return cardNo > 0 ? "كرت #" + cardNo : "كرت مؤقت — يُثبّت عند المزامنة";
     }
 
     private String roleLabel(String value) {

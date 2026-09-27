@@ -17,7 +17,7 @@ import java.util.Locale;
 import java.util.Set;
 
 public class ClinicDb extends SQLiteOpenHelper {
-    private static final int DATABASE_VERSION = 5;
+    private static final int DATABASE_VERSION = 6;
     private static final String LEGACY_DATABASE = "clinic_offline.db";
     public static final String NEW = "NEW";
     public static final String FREE_FOLLOWUP = "FREE_FOLLOWUP";
@@ -85,6 +85,16 @@ public class ClinicDb extends SQLiteOpenHelper {
             addColumnIfMissing(db, "audit_log", "actor_display_name", "TEXT NOT NULL DEFAULT ''");
             addColumnIfMissing(db, "audit_log", "actor_role", "TEXT NOT NULL DEFAULT ''");
         }
+        if (oldVersion < 6) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS sync_conflicts (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, sync_key TEXT NOT NULL, local_payload TEXT NOT NULL, remote_payload TEXT NOT NULL, detected_at TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0)");
+            addColumnIfMissing(db, "sync_entity_keys", "remote_version", "INTEGER NOT NULL DEFAULT 0");
+            addColumnIfMissing(db, "sync_dirty", "attempt_count", "INTEGER NOT NULL DEFAULT 0");
+            addColumnIfMissing(db, "sync_dirty", "last_error", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "sync_dirty", "next_retry_at", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "sync_dirty", "sync_status", "TEXT NOT NULL DEFAULT 'pending'");
+            addColumnIfMissing(db, "sync_conflicts", "remote_version", "INTEGER NOT NULL DEFAULT 0");
+            normalizeLegacySyncKeys(db);
+        }
         createSyncSchema(db);
     }
 
@@ -100,9 +110,15 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private static void createSyncSchema(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE IF NOT EXISTS sync_entity_keys (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, sync_key TEXT NOT NULL UNIQUE, PRIMARY KEY(entity_type, local_id))");
-        db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(entity_type, local_id))");
+        db.execSQL("CREATE TABLE IF NOT EXISTS sync_entity_keys (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, sync_key TEXT NOT NULL UNIQUE, remote_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(entity_type, local_id))");
+        db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', next_retry_at TEXT NOT NULL DEFAULT '', sync_status TEXT NOT NULL DEFAULT 'pending', PRIMARY KEY(entity_type, local_id))");
         db.execSQL("CREATE TABLE IF NOT EXISTS sync_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS sync_conflicts (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, sync_key TEXT NOT NULL, local_payload TEXT NOT NULL, remote_payload TEXT NOT NULL, remote_version INTEGER NOT NULL DEFAULT 0, detected_at TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_conflicts_open ON sync_conflicts(resolved,detected_at)");
+    }
+
+    private static void normalizeLegacySyncKeys(SQLiteDatabase db) {
+        db.execSQL("UPDATE sync_entity_keys SET sync_key=lower(substr(sync_key,1,8)||'-'||substr(sync_key,9,4)||'-'||substr(sync_key,13,4)||'-'||substr(sync_key,17,4)||'-'||substr(sync_key,21,12)) WHERE length(sync_key)=32 AND sync_key NOT LIKE '%-%'");
     }
 
     private static void addColumnIfMissing(SQLiteDatabase db, String table, String column, String definition) {
@@ -544,10 +560,27 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private int nextCardNo() {
-        Cursor c = getReadableDatabase().rawQuery("SELECT COALESCE(MAX(card_no),1000)+1 FROM patients", null);
-        int n = c.moveToFirst() ? c.getInt(0) : 1001;
-        c.close();
-        return n;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            long next = metaLong(db, "card_range_next", 0);
+            long end = metaLong(db, "card_range_end", -1);
+            if (next > 0 && next <= end) {
+                putMeta(db, "card_range_next", String.valueOf(next + 1));
+                db.setTransactionSuccessful();
+                return (int)Math.min(Integer.MAX_VALUE, next);
+            }
+            long temporary = metaLong(db, "temporary_card_next", -1);
+            if (temporary >= 0) temporary = -1;
+            putMeta(db, "temporary_card_next", String.valueOf(temporary - 1));
+            db.setTransactionSuccessful();
+            return (int)Math.max(Integer.MIN_VALUE, temporary);
+        } finally { db.endTransaction(); }
+    }
+
+    private static long metaLong(SQLiteDatabase db, String key, long fallback) {
+        try { return Long.parseLong(metaValue(db, key)); }
+        catch (Exception ignored) { return fallback; }
     }
 
     private Patient patientFrom(Cursor c) {

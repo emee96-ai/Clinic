@@ -15,8 +15,8 @@ public final class SyncBootstrap {
             SQLiteDatabase db = helper.getWritableDatabase();
             db.beginTransaction();
             try {
-                db.execSQL("CREATE TABLE IF NOT EXISTS sync_entity_keys (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, sync_key TEXT NOT NULL UNIQUE, PRIMARY KEY(entity_type, local_id))");
-                db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(entity_type, local_id))");
+                db.execSQL("CREATE TABLE IF NOT EXISTS sync_entity_keys (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, sync_key TEXT NOT NULL UNIQUE, remote_version INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(entity_type, local_id))");
+                db.execSQL("CREATE TABLE IF NOT EXISTS sync_dirty (entity_type TEXT NOT NULL, local_id INTEGER NOT NULL, changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, attempt_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', next_retry_at TEXT NOT NULL DEFAULT '', sync_status TEXT NOT NULL DEFAULT 'pending', PRIMARY KEY(entity_type, local_id))");
                 db.execSQL("CREATE TABLE IF NOT EXISTS sync_meta (meta_key TEXT PRIMARY KEY, meta_value TEXT NOT NULL)");
                 helper.bindToActiveClinic(db);
 
@@ -66,15 +66,15 @@ public final class SyncBootstrap {
         else prefix = "closures";
 
         db.execSQL("CREATE TRIGGER trg_sync_" + prefix + "_insert AFTER INSERT ON " + table + when + "BEGIN " +
-                "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('" + entity + "',NEW.id,lower(hex(randomblob(16)))); " +
+                "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT '" + entity + "',NEW.id,substr(h,1,8)||'-'||substr(h,9,4)||'-'||substr(h,13,4)||'-'||substr(h,17,4)||'-'||substr(h,21,12) FROM (SELECT lower(hex(randomblob(16))) h); " +
                 "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('" + entity + "',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
         db.execSQL("CREATE TRIGGER trg_sync_" + prefix + "_update AFTER UPDATE ON " + table + when + "BEGIN " +
-                "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) VALUES('" + entity + "',NEW.id,lower(hex(randomblob(16)))); " +
+                "INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT '" + entity + "',NEW.id,substr(h,1,8)||'-'||substr(h,9,4)||'-'||substr(h,13,4)||'-'||substr(h,17,4)||'-'||substr(h,21,12) FROM (SELECT lower(hex(randomblob(16))) h); " +
                 "INSERT OR REPLACE INTO sync_dirty(entity_type,local_id,changed_at) VALUES('" + entity + "',NEW.id,STRFTIME('%Y-%m-%d %H:%M:%f','now')); END");
     }
 
     private static void ensureKeys(SQLiteDatabase db, String table, String entity) {
-        db.execSQL("INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT '" + entity + "',id,lower(hex(randomblob(16))) FROM " + table);
+        db.execSQL("INSERT OR IGNORE INTO sync_entity_keys(entity_type,local_id,sync_key) SELECT '" + entity + "',id,lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-'||hex(randomblob(2))||'-'||hex(randomblob(2))||'-'||hex(randomblob(6))) FROM " + table);
     }
 
     private static void markExistingDirty(SQLiteDatabase db, String table, String entity) {

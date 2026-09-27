@@ -2,51 +2,73 @@ package com.eman.clinic;
 
 import android.content.Context;
 
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import androidx.work.BackoffPolicy;
+import androidx.work.Constraints;
+import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.ExistingWorkPolicy;
+import androidx.work.NetworkType;
+import androidx.work.OneTimeWorkRequest;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
+
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Lightweight process-lifetime scheduler. Local work never waits for network. */
+/** Persistent WorkManager scheduler. Local clinic work never waits for network. */
 public final class SyncCoordinator {
-    private static final ScheduledExecutorService EXECUTOR = Executors.newSingleThreadScheduledExecutor();
-    private static final AtomicBoolean STARTED = new AtomicBoolean(false);
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
-    private static Context app;
+    private static final String PERIODIC = "clinic-cloud-sync-periodic";
+    private static final String IMMEDIATE = "clinic-cloud-sync-now";
 
     private SyncCoordinator() {}
 
     public static void start(Context context) {
-        app = context.getApplicationContext();
-        if (!STARTED.compareAndSet(false, true)) return;
-        EXECUTOR.scheduleWithFixedDelay(SyncCoordinator::runSafe, 4, 30, TimeUnit.SECONDS);
+        Context app = context.getApplicationContext();
+        Constraints connected = new Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .setRequiresBatteryNotLow(true)
+                .build();
+        PeriodicWorkRequest periodic = new PeriodicWorkRequest.Builder(
+                ClinicSyncWorker.class, 15, TimeUnit.MINUTES)
+                .setConstraints(connected)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build();
+        WorkManager.getInstance(app).enqueueUniquePeriodicWork(
+                PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, periodic);
+        kick(app);
     }
 
     public static void kick(Context context) {
-        app = context.getApplicationContext();
-        EXECUTOR.execute(SyncCoordinator::runSafe);
+        Constraints connected = new Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED).build();
+        OneTimeWorkRequest work = new OneTimeWorkRequest.Builder(ClinicSyncWorker.class)
+                .setConstraints(connected)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build();
+        WorkManager.getInstance(context.getApplicationContext())
+                .enqueueUniqueWork(IMMEDIATE, ExistingWorkPolicy.KEEP, work);
     }
 
-    private static void runSafe() {
-        Context c = app;
-        if (c == null || !RUNNING.compareAndSet(false, true)) return;
+    static boolean runBlocking(Context c) {
+        if (c == null || !RUNNING.compareAndSet(false, true)) return true;
         try {
             AuthStore auth = new AuthStore(c);
-            if (!auth.hasRemoteIdentity()) return;
+            if (!auth.hasRemoteIdentity()) return true;
 
             SupabaseApi api = new SupabaseApi(c);
             boolean activeMembership = api.resolveMembership();
             if (!activeMembership) {
                 auth.markMembershipInactive();
-                return;
+                return true;
             }
 
             int conflicts = new ResilientRemoteSync(c).syncOnce();
             if (conflicts > 0) ClinicApp.showSyncConflict(conflicts);
             if (auth.isSubscriptionBlocked()) ClinicApp.showSubscriptionBlocked();
+            SyncStore store = new SyncStore(c);
+            return store.failedCount() == 0;
         } catch (Exception ignored) {
-            // Network failure must never interrupt clinic work or falsely revoke access.
-            // The SQLite outbox remains intact and the next pass retries automatically.
+            return false;
         } finally {
             RUNNING.set(false);
         }

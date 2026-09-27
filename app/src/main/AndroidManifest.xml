@@ -19,6 +19,7 @@
         <activity android:name=".BillingActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".StaffActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".LocalSyncActivity" android:screenOrientation="portrait" android:exported="false" />
+        <activity android:name=".SyncIssuesActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity android:name=".BackupActivity" android:screenOrientation="portrait" android:exported="false" />
         <activity
             android:name=".LauncherActivity"

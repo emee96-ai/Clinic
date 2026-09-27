@@ -25,8 +25,8 @@ public final class ClinicBackupManager {
     private static final String[] PAYMENT_COLS = {"id","visit_id","amount","method","created_at"};
     private static final String[] CLOSURE_COLS = {"id","day","total_visits","total_charges","total_paid","total_waived","outstanding","closed_at"};
     private static final String[] AUDIT_COLS = {"id","action","entity_type","entity_id","details","actor_user_id","actor_display_name","actor_role","created_at"};
-    private static final String[] KEY_COLS = {"entity_type","local_id","sync_key"};
-    private static final String[] DIRTY_COLS = {"entity_type","local_id","changed_at"};
+    private static final String[] KEY_COLS = {"entity_type","local_id","sync_key","remote_version"};
+    private static final String[] DIRTY_COLS = {"entity_type","local_id","changed_at","attempt_count","last_error","next_retry_at","sync_status"};
 
     private final Context context;
     private final ClinicDb helper;
@@ -63,8 +63,8 @@ public final class ClinicBackupManager {
         data.put("payments", query(db, "SELECT id,visit_id,amount,method,created_at FROM payments ORDER BY id", PAYMENT_COLS));
         data.put("day_closures", query(db, "SELECT id,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at FROM day_closures ORDER BY id", CLOSURE_COLS));
         data.put("audit_log", query(db, "SELECT id,action,entity_type,entity_id,details,actor_user_id,actor_display_name,actor_role,created_at FROM audit_log ORDER BY id", AUDIT_COLS));
-        data.put("sync_entity_keys", query(db, "SELECT entity_type,local_id,sync_key FROM sync_entity_keys ORDER BY entity_type,local_id", KEY_COLS));
-        data.put("sync_dirty", query(db, "SELECT entity_type,local_id,changed_at FROM sync_dirty ORDER BY changed_at", DIRTY_COLS));
+        data.put("sync_entity_keys", query(db, "SELECT entity_type,local_id,sync_key,remote_version FROM sync_entity_keys ORDER BY entity_type,local_id", KEY_COLS));
+        data.put("sync_dirty", query(db, "SELECT entity_type,local_id,changed_at,attempt_count,last_error,next_retry_at,sync_status FROM sync_dirty ORDER BY changed_at", DIRTY_COLS));
         root.put("data", data);
 
         validateBackup(root, false);
@@ -221,7 +221,9 @@ public final class ClinicBackupManager {
     }
 
     private static void clearRemoteCursors(SQLiteDatabase db) {
-        db.delete("sync_meta", "meta_key IN (?,?,?,?)", new String[]{"patients_cursor","visits_cursor","payments_cursor","closures_cursor"});
+        db.delete("sync_meta", "meta_key IN (?,?,?,?,?,?,?,?)", new String[]{
+                "patients_cursor","patients_cursor_sync_key","visits_cursor","visits_cursor_sync_key",
+                "payments_cursor","payments_cursor_sync_key","closures_cursor","closures_cursor_sync_key"});
     }
 
     private static String timestamp() {

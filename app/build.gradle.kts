@@ -19,8 +19,8 @@ android {
         applicationId = "com.eman.clinic"
         minSdk = 24
         targetSdk = 35
-        versionCode = 27
-        versionName = "1.16.0"
+        versionCode = 28
+        versionName = "1.17.0"
     }
 
     buildFeatures {
@@ -69,5 +69,6 @@ android {
 dependencies {
     implementation("net.zetetic:sqlcipher-android:4.17.0@aar")
     implementation("androidx.sqlite:sqlite:2.7.0")
+    implementation("androidx.work:work-runtime:2.11.2")
     testImplementation("junit:junit:4.13.2")
 }

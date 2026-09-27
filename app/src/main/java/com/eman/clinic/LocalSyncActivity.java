@@ -123,6 +123,14 @@ public class LocalSyncActivity extends Activity {
         root.addView(sync);
         root.addView(ClinicUi.space(this,10));
 
+        SyncStore cloud = new SyncStore(this);
+        TextView issues = ClinicUi.button(this,
+                "حالة السحابة: " + cloud.queuedCount() + " انتظار • "
+                        + cloud.failedCount() + " فشل • " + cloud.conflictCount() + " تعارض", false);
+        issues.setOnClickListener(v -> startActivity(new Intent(this, SyncIssuesActivity.class)));
+        root.addView(issues);
+        root.addView(ClinicUi.space(this,10));
+
         TextView back = ClinicUi.button(this,"رجوع",false);
         back.setOnClickListener(v -> finish());
         root.addView(back);

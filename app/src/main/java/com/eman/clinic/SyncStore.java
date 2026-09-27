@@ -11,6 +11,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.TimeZone;
 import java.util.UUID;
 
 /** Reads the durable database outbox and safely applies remote rows. */
@@ -24,6 +25,7 @@ public class SyncStore {
         if (auth.hasRemoteIdentity() && !helper.isBoundToActiveClinic()) {
             throw new SecurityException("Sync blocked: clinic database scope mismatch");
         }
+        helper.getWritableDatabase().execSQL("UPDATE sync_dirty SET sync_status='pending' WHERE sync_status='syncing'");
     }
 
     public int pendingCount() {
@@ -33,11 +35,32 @@ public class SyncStore {
         return count;
     }
 
+    public int queuedCount() {
+        Cursor c = helper.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM sync_dirty WHERE sync_status<>'failed'", null);
+        int count = c.moveToFirst() ? c.getInt(0) : 0;
+        c.close();
+        return count;
+    }
+
+    public int failedCount() {
+        Cursor c = helper.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM sync_dirty WHERE sync_status='failed'", null);
+        int count = c.moveToFirst() ? c.getInt(0) : 0;
+        c.close();
+        return count;
+    }
+
+    public int conflictCount() {
+        Cursor c = helper.getReadableDatabase().rawQuery("SELECT COUNT(*) FROM sync_conflicts WHERE resolved=0", null);
+        int count = c.moveToFirst() ? c.getInt(0) : 0;
+        c.close();
+        return count;
+    }
+
     public List<SyncItem> pending(int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 500));
         List<SyncItem> items = new ArrayList<>();
         Cursor dirty = helper.getReadableDatabase().rawQuery(
-                "SELECT entity_type,local_id,changed_at FROM sync_dirty ORDER BY " +
+                "SELECT entity_type,local_id,changed_at FROM sync_dirty WHERE next_retry_at='' OR next_retry_at<=STRFTIME('%Y-%m-%d %H:%M:%f','now') ORDER BY " +
                         "CASE entity_type WHEN 'patient' THEN 0 WHEN 'visit' THEN 1 WHEN 'payment' THEN 2 ELSE 3 END, changed_at ASC LIMIT " + safeLimit,
                 null);
         while (dirty.moveToNext()) {
@@ -156,6 +179,110 @@ public class SyncStore {
         helper.getWritableDatabase().delete("sync_dirty", "entity_type=? AND local_id=? AND changed_at=?", new String[]{item.entityType, String.valueOf(item.localId), item.changedAt});
     }
 
+    public void markSyncing(SyncItem item) {
+        ContentValues v = new ContentValues();
+        v.put("sync_status", "syncing");
+        v.put("last_error", "");
+        helper.getWritableDatabase().update("sync_dirty", v,
+                "entity_type=? AND local_id=?", new String[]{item.entityType, String.valueOf(item.localId)});
+    }
+
+    public void markFailed(SyncItem item, String error) {
+        SQLiteDatabase db = helper.getWritableDatabase();
+        Cursor c = db.rawQuery("SELECT attempt_count FROM sync_dirty WHERE entity_type=? AND local_id=?",
+                new String[]{item.entityType, String.valueOf(item.localId)});
+        int attempts = c.moveToFirst() ? c.getInt(0) + 1 : 1;
+        c.close();
+        int delaySeconds = SyncRetryPolicy.delaySeconds(attempts);
+        ContentValues v = new ContentValues();
+        v.put("attempt_count", attempts);
+        v.put("last_error", safe(error).length() > 240 ? safe(error).substring(0, 240) : safe(error));
+        java.text.SimpleDateFormat retryAt = new java.text.SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US);
+        retryAt.setTimeZone(TimeZone.getTimeZone("UTC"));
+        v.put("next_retry_at", retryAt.format(
+                new java.util.Date(System.currentTimeMillis() + delaySeconds * 1000L)));
+        v.put("sync_status", "failed");
+        db.update("sync_dirty", v, "entity_type=? AND local_id=?",
+                new String[]{item.entityType, String.valueOf(item.localId)});
+    }
+
+    public void retryAll() {
+        helper.getWritableDatabase().execSQL("UPDATE sync_dirty SET sync_status='pending',next_retry_at='',last_error='' ");
+    }
+
+    public List<SyncIssue> issues() {
+        List<SyncIssue> out = new ArrayList<>();
+        Cursor dirty = helper.getReadableDatabase().rawQuery(
+                "SELECT entity_type,local_id,sync_status,attempt_count,last_error,changed_at FROM sync_dirty ORDER BY CASE sync_status WHEN 'failed' THEN 0 ELSE 1 END,changed_at", null);
+        while (dirty.moveToNext()) {
+            out.add(new SyncIssue(false, dirty.getString(0), dirty.getLong(1),
+                    dirty.getString(2), dirty.getInt(3), safe(dirty.getString(4)), dirty.getString(5)));
+        }
+        dirty.close();
+        Cursor conflicts = helper.getReadableDatabase().rawQuery(
+                "SELECT id,entity_type,detected_at FROM sync_conflicts WHERE resolved=0 ORDER BY detected_at DESC", null);
+        while (conflicts.moveToNext()) {
+            out.add(new SyncIssue(true, conflicts.getString(1), conflicts.getLong(0),
+                    "conflict", 0, "تم حفظ نسخة الجهاز واعتماد نسخة الخادم مؤقتاً", conflicts.getString(2)));
+        }
+        conflicts.close();
+        return out;
+    }
+
+    public void acknowledgeConflict(long id) {
+        ContentValues v = new ContentValues();
+        v.put("resolved", 1);
+        helper.getWritableDatabase().update("sync_conflicts", v, "id=?", new String[]{String.valueOf(id)});
+    }
+
+    public void noteSyncSuccess() {
+        putMeta("last_cloud_sync_at", new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                .format(new java.util.Date()));
+    }
+
+    public long remoteVersion(String entityType, String syncKey) {
+        Cursor c = helper.getReadableDatabase().rawQuery(
+                "SELECT remote_version FROM sync_entity_keys WHERE entity_type=? AND sync_key=?",
+                new String[]{entityType, syncKey});
+        long value = c.moveToFirst() ? c.getLong(0) : 0;
+        c.close();
+        return value;
+    }
+
+    public void setRemoteVersion(String entityType, String syncKey, long version) {
+        ContentValues v = new ContentValues();
+        v.put("remote_version", Math.max(0, version));
+        helper.getWritableDatabase().update("sync_entity_keys", v, "entity_type=? AND sync_key=?",
+                new String[]{entityType, syncKey});
+    }
+
+    public void saveCardRange(long start, long end) {
+        if (start <= 0 || end < start) return;
+        putMeta("card_range_next", String.valueOf(start));
+        putMeta("card_range_end", String.valueOf(end));
+    }
+
+    public int remainingCardNumbers() {
+        try {
+            long next = Long.parseLong(meta("card_range_next"));
+            long end = Long.parseLong(meta("card_range_end"));
+            return next > 0 && end >= next ? (int)Math.min(Integer.MAX_VALUE, end - next + 1) : 0;
+        } catch (Exception ignored) { return 0; }
+    }
+
+    public void updatePatientCard(String syncKey, int cardNo) {
+        if (cardNo <= 0) return;
+        Long localId = localIdForKey("patient", syncKey);
+        if (localId == null) return;
+        suppress(true);
+        try {
+            ContentValues v = new ContentValues();
+            v.put("card_no", cardNo);
+            helper.getWritableDatabase().update("patients", v, "id=?", new String[]{String.valueOf(localId)});
+        } finally { suppress(false); }
+    }
+
     public String deviceId() {
         String existing = meta("device_id");
         if (!existing.isEmpty()) return existing;
@@ -197,6 +324,7 @@ public class SyncStore {
         cv.put("entity_type", entityType);
         cv.put("local_id", localId);
         cv.put("sync_key", syncKey);
+        cv.put("remote_version", 0);
         helper.getWritableDatabase().insertWithOnConflict("sync_entity_keys", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
@@ -343,6 +471,27 @@ public class SyncStore {
             this.syncKey = syncKey;
             this.changedAt = changedAt;
             this.payload = payload;
+        }
+    }
+
+    public static final class SyncIssue {
+        public final boolean conflict;
+        public final String entityType;
+        public final long id;
+        public final String status;
+        public final int attempts;
+        public final String message;
+        public final String at;
+
+        SyncIssue(boolean conflict, String entityType, long id, String status,
+                  int attempts, String message, String at) {
+            this.conflict = conflict;
+            this.entityType = entityType;
+            this.id = id;
+            this.status = status;
+            this.attempts = attempts;
+            this.message = message;
+            this.at = at;
         }
     }
 }
