@@ -147,9 +147,10 @@ public class SyncStore {
 
     private SyncItem paymentItem(long id, String changedAt) {
         Cursor c = helper.getReadableDatabase().rawQuery(
-                "SELECT p.amount,p.method,p.created_at,pk.sync_key,vk.sync_key FROM payments p " +
+                "SELECT p.amount,p.method,p.created_at,pk.sync_key,vk.sync_key,p.event_type,p.reason,p.actor_user_id,p.actor_display_name,p.actor_role,rk.sync_key FROM payments p " +
                         "JOIN sync_entity_keys pk ON pk.entity_type='payment' AND pk.local_id=p.id " +
-                        "JOIN sync_entity_keys vk ON vk.entity_type='visit' AND vk.local_id=p.visit_id WHERE p.id=?",
+                        "JOIN sync_entity_keys vk ON vk.entity_type='visit' AND vk.local_id=p.visit_id " +
+                        "LEFT JOIN sync_entity_keys rk ON rk.entity_type='payment' AND rk.local_id=p.reversal_of_payment_id WHERE p.id=?",
                 new String[]{String.valueOf(id)});
         if (!c.moveToFirst()) { c.close(); return null; }
         try {
@@ -159,6 +160,12 @@ public class SyncStore {
             json.put("amount", c.getInt(0));
             json.put("method", safe(c.getString(1)));
             json.put("created_at", safe(c.getString(2)));
+            json.put("event_type", safe(c.getString(5)));
+            json.put("reason", safe(c.getString(6)));
+            json.put("actor_user_id", safe(c.getString(7)));
+            json.put("actor_display_name", safe(c.getString(8)));
+            json.put("actor_role", safe(c.getString(9)));
+            json.put("reversal_sync_key", safe(c.getString(10)));
             SyncItem item = new SyncItem("payment", id, c.getString(3), changedAt, json.toString());
             c.close();
             return item;
@@ -167,7 +174,7 @@ public class SyncStore {
 
     private SyncItem closureItem(long id, String changedAt) {
         Cursor c = helper.getReadableDatabase().rawQuery(
-                "SELECT d.day,d.total_visits,d.total_charges,d.total_paid,d.total_waived,d.outstanding,d.closed_at,k.sync_key " +
+                "SELECT d.day,d.total_visits,d.total_charges,d.total_paid,d.total_waived,d.outstanding,d.closed_at,k.sync_key,d.is_reopened,d.reopen_count,d.last_reopened_at,d.last_reopened_by_user_id,d.last_reopened_by_name,d.last_reopen_reason " +
                         "FROM day_closures d JOIN sync_entity_keys k ON k.entity_type='day_closure' AND k.local_id=d.id WHERE d.id=?",
                 new String[]{String.valueOf(id)});
         if (!c.moveToFirst()) { c.close(); return null; }
@@ -181,6 +188,12 @@ public class SyncStore {
             json.put("total_waived", c.getInt(4));
             json.put("outstanding", c.getInt(5));
             json.put("closed_at", safe(c.getString(6)));
+            json.put("is_reopened", c.getInt(8) != 0);
+            json.put("reopen_count", c.getInt(9));
+            json.put("last_reopened_at", safe(c.getString(10)));
+            json.put("last_reopened_by_user_id", safe(c.getString(11)));
+            json.put("last_reopened_by_name", safe(c.getString(12)));
+            json.put("last_reopen_reason", safe(c.getString(13)));
             SyncItem item = new SyncItem("day_closure", id, c.getString(7), changedAt, json.toString());
             c.close();
             return item;
@@ -426,6 +439,16 @@ public class SyncStore {
             v.put("visit_id", visitLocalId);
             v.put("amount", row.optInt("amount", 0));
             v.put("method", row.optString("method", ""));
+            v.put("event_type", row.optString("event_type", "PAYMENT"));
+            v.put("reason", row.optString("reason", ""));
+            v.put("actor_user_id", row.optString("actor_user_id", ""));
+            v.put("actor_display_name", row.optString("actor_display_name", ""));
+            v.put("actor_role", row.optString("actor_role", ""));
+            JSONObject reversal = row.optJSONObject("reversal");
+            if (reversal != null) {
+                Long reversalLocalId=localIdForKey("payment",reversal.optString("sync_key",""));
+                if(reversalLocalId!=null) v.put("reversal_of_payment_id",reversalLocalId);
+            }
             v.put("created_at", normalizeTime(row.optString("created_at", "")));
             SQLiteDatabase db = helper.getWritableDatabase();
             long id;
@@ -453,6 +476,12 @@ public class SyncStore {
             v.put("total_waived", row.optInt("total_waived", 0));
             v.put("outstanding", row.optInt("outstanding", 0));
             v.put("closed_at", normalizeTime(row.optString("closed_at", "")));
+            v.put("is_reopened", row.optBoolean("is_reopened", false) ? 1 : 0);
+            v.put("reopen_count", row.optInt("reopen_count", 0));
+            String reopened=normalizeNullable(row.optString("last_reopened_at", "")); if(reopened==null)v.putNull("last_reopened_at");else v.put("last_reopened_at",reopened);
+            v.put("last_reopened_by_user_id",row.optString("last_reopened_by_user_id",""));
+            v.put("last_reopened_by_name",row.optString("last_reopened_by_name",""));
+            v.put("last_reopen_reason",row.optString("last_reopen_reason",""));
             SQLiteDatabase db = helper.getWritableDatabase();
             long id;
             if (localId == null) id = db.insert("day_closures", null, v);

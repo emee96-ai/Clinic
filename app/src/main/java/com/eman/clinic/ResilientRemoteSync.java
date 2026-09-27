@@ -2,6 +2,7 @@ package com.eman.clinic;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.SharedPreferences;
 import net.zetetic.database.sqlcipher.SQLiteDatabase;
 
 import org.json.JSONArray;
@@ -53,6 +54,7 @@ public final class ResilientRemoteSync {
         if (!api.refreshEntitlement()) return 0;
 
         String clinicId = auth.clinicId();
+        syncFinanceSettings(clinicId);
         ensureCardNumberRange();
         List<SyncStore.SyncItem> pending = store.pending(PUSH_LIMIT);
         Map<String, JSONObject> versions = loadVersions(clinicId, pending);
@@ -210,6 +212,7 @@ public final class ResilientRemoteSync {
             clinicalBody.put("weight", local.optString("weight", ""));
             clinicalBody.put("oxygen", local.optString("oxygen", ""));
             clinicalBody.put("medications_text", local.optString("medications_text", ""));
+            clinicalBody.put("visit_change_id", changeId);
             clinicalBody.put("updated_by", auth.userId());
             Response clinicalResult = request("POST", "/rest/v1/clinical_records?on_conflict=visit_id",
                     clinicalBody.toString(), "resolution=merge-duplicates,return=minimal");
@@ -224,6 +227,13 @@ public final class ResilientRemoteSync {
         if (visitId.isEmpty()) return null;
         JSONObject body = new JSONObject(local.toString());
         body.remove("visit_sync_key");
+        String reversalSyncKey=body.optString("reversal_sync_key",""); body.remove("reversal_sync_key");
+        if(!reversalSyncKey.isEmpty()) {
+            String reversalId=remoteId("payments",clinicId,reversalSyncKey);
+            if(reversalId.isEmpty()) return null;
+            body.put("reversal_of_payment_id",reversalId);
+        }
+        if(body.optString("actor_user_id","").isEmpty()) body.put("actor_user_id",JSONObject.NULL);
         body.put("clinic_id", clinicId);
         body.put("visit_id", visitId);
         body.put("source_device_id", deviceId);
@@ -235,6 +245,8 @@ public final class ResilientRemoteSync {
     private JSONObject pushClosure(String clinicId, String deviceId, String changeId, JSONObject local, JSONObject remote) throws Exception {
         if (!auth.can("close_day")) return null;
         JSONObject body = new JSONObject(local.toString());
+        if(body.optString("last_reopened_at","").isEmpty()) body.put("last_reopened_at",JSONObject.NULL);
+        if(body.optString("last_reopened_by_user_id","").isEmpty()) body.put("last_reopened_by_user_id",JSONObject.NULL);
         body.put("clinic_id", clinicId);
         body.put("source_device_id", deviceId);
         body.put("client_change_id", changeId);
@@ -339,12 +351,12 @@ public final class ResilientRemoteSync {
             path = "/rest/v1/visits?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
                     + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("payment".equals(type)) {
-            String select = "sync_key,amount,method,created_at,updated_at,client_change_id,source_device_id,record_version,visit:visits(sync_key)";
+            String select = paymentSelect();
             path = "/rest/v1/payments?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
                     + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("day_closure".equals(type)) {
             String day = local.optString("day", "");
-            path = "/rest/v1/day_closures?select=sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at,client_change_id,source_device_id,record_version"
+            path = "/rest/v1/day_closures?select="+enc(closureSelect())
                     + "&clinic_id=eq." + enc(clinicId) + "&day=eq." + enc(day) + "&limit=1";
         } else return null;
         JSONArray a = getArray(path);
@@ -368,14 +380,39 @@ public final class ResilientRemoteSync {
 
     private void pullPayments(String clinicId) throws Exception {
         if (!(auth.can("view_finance") || auth.can("record_payments"))) return;
-        String select = "sync_key,amount,method,created_at,updated_at,client_change_id,source_device_id,record_version,visit:visits(sync_key)";
+        String select = paymentSelect();
         pullPaged("payment", "payments_cursor", clinicId, "payments", select);
     }
 
     private void pullClosures(String clinicId) throws Exception {
         if (!(auth.can("view_finance") || auth.can("close_day"))) return;
-        String select = "sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,updated_at,client_change_id,source_device_id,record_version";
+        String select = closureSelect();
         pullPaged("day_closure", "closures_cursor", clinicId, "day_closures", select);
+    }
+
+    private static String paymentSelect() {
+        return "sync_key,amount,method,event_type,reason,actor_user_id,actor_display_name,actor_role,created_at,updated_at,client_change_id,source_device_id,record_version,visit:visits(sync_key),reversal:payments!reversal_of_payment_id(sync_key)";
+    }
+
+    private static String closureSelect() {
+        return "sync_key,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,is_reopened,reopen_count,last_reopened_at,last_reopened_by_user_id,last_reopened_by_name,last_reopen_reason,updated_at,client_change_id,source_device_id,record_version";
+    }
+
+    private void syncFinanceSettings(String clinicId) throws Exception {
+        SharedPreferences prefs=context.getSharedPreferences("clinic_settings",Context.MODE_PRIVATE);
+        boolean dirty="1".equals(store.meta("finance_settings_dirty"));
+        if(dirty && "owner_doctor".equals(auth.memberRole())) {
+            JSONObject body=new JSONObject(); body.put("p_clinic_id",clinicId);
+            body.put("p_visit_fee",prefs.getInt("visit_fee",10000)); body.put("p_result_fee",prefs.getInt("result_fee",0));
+            body.put("p_followup_days",prefs.getInt("followup_days",7));
+            Response update=request("POST","/rest/v1/rpc/update_clinic_finance_settings",body.toString(),null);
+            if(!ok(update)) throw new IOException(errorMessage(update));
+            store.putMeta("finance_settings_dirty","0"); dirty=false;
+        }
+        if(!dirty) {
+            JSONArray rows=getArray("/rest/v1/clinics?select=visit_fee,result_fee,followup_days&id=eq."+enc(clinicId)+"&limit=1");
+            if(rows.length()>0){JSONObject row=rows.getJSONObject(0); prefs.edit().putInt("visit_fee",row.optInt("visit_fee",10000)).putInt("result_fee",row.optInt("result_fee",0)).putInt("followup_days",row.optInt("followup_days",7)).apply();}
+        }
     }
 
     private void pullPaged(String type, String cursorKey, String clinicId, String table, String select) throws Exception {

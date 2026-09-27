@@ -27,6 +27,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - name: Reject client secrets
+        run: |
+          if grep -R -n -E 'sb_secret_|service_role[[:space:]]*[:=]|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' app/src admin-web --exclude=check.js; then
+            echo "A server secret or private key was found in client sources" >&2
+            exit 1
+          fi
       - name: Require release signing secrets
         env:
           KEYSTORE_B64: ${{ secrets.CLINIC_KEYSTORE_B64 }}
@@ -47,7 +53,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/clinic-signing/clinic-release.jks"
       - name: Unit tests and release lint
         run: |
-          gradle :app:testDebugUnitTest --stacktrace
+          gradle :app:testReleaseUnitTest --stacktrace
           gradle :app:lintRelease --stacktrace
       - name: Build signed release APK
         env:

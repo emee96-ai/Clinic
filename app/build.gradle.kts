@@ -1,5 +1,7 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.kapt")
 }
 
 val clinicKeystorePath = System.getenv("CLINIC_KEYSTORE_PATH")
@@ -19,8 +21,8 @@ android {
         applicationId = "com.eman.clinic"
         minSdk = 24
         targetSdk = 35
-        versionCode = 29
-        versionName = "1.18.0"
+        versionCode = 33
+        versionName = "1.22.0"
     }
 
     buildFeatures {
@@ -66,9 +68,19 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 dependencies {
     implementation("net.zetetic:sqlcipher-android:4.17.0@aar")
     implementation("androidx.sqlite:sqlite:2.7.0")
     implementation("androidx.work:work-runtime:2.11.2")
+    implementation("androidx.activity:activity:1.10.1")
+    implementation("androidx.lifecycle:lifecycle-viewmodel:2.8.7")
+    implementation("androidx.room:room-runtime:2.7.2")
+    kapt("androidx.room:room-compiler:2.7.2")
     testImplementation("junit:junit:4.13.2")
 }

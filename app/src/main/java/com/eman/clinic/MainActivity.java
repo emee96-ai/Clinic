@@ -1,9 +1,11 @@
 package com.eman.clinic;
 
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -25,14 +27,19 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.ComponentActivity;
+import androidx.lifecycle.ViewModelProvider;
+
 import java.text.NumberFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-public class MainActivity extends Activity {
+public class MainActivity extends ComponentActivity {
     private static final int NAV_HOME = 0, NAV_QUEUE = 1, NAV_PATIENTS = 2, NAV_FINANCE = 3;
+    private static final int SCREEN_HOME=0, SCREEN_QUEUE=1, SCREEN_DOCTOR=2, SCREEN_DOCTOR_VISIT=3,
+            SCREEN_PATIENTS=4, SCREEN_PATIENT_DETAIL=5, SCREEN_FINANCE=6, SCREEN_SETTINGS=7;
     private static final String ROLE_RECEPTION = "RECEPTION";
     private static final String ROLE_DOCTOR = "DOCTOR";
 
@@ -46,10 +53,14 @@ public class MainActivity extends Activity {
     private final int warning = Color.rgb(175, 105, 16);
 
     private ClinicDb db;
+    private ClinicViewModel viewModel;
     private AuthStore auth;
     private SharedPreferences prefs;
     private LinearLayout content;
     private String role;
+    private int currentScreen = SCREEN_HOME;
+    private long currentPatientId = -1;
+    private long patientDetailReturnVisitId = -1;
 
     private long activeVisitId = -1;
     private EditText activeComplaint, activeExam, activeDiagnosis, activeLabs, activeTreatment, activeFollowup;
@@ -69,10 +80,22 @@ public class MainActivity extends Activity {
             finish();
             return;
         }
-        db = new ClinicDb(this);
+        viewModel = new ViewModelProvider(this).get(ClinicViewModel.class);
+        db = viewModel.database();
         prefs = getSharedPreferences("clinic_settings", MODE_PRIVATE);
         role = uiRole(auth.memberRole());
-        showHome();
+        long restoredVisit=bundle==null?-1:bundle.getLong("active_visit_id",-1);
+        int restoredScreen=bundle==null?SCREEN_HOME:bundle.getInt("screen",SCREEN_HOME);
+        currentPatientId=bundle==null?-1:bundle.getLong("patient_id",-1);
+        patientDetailReturnVisitId=bundle==null?-1:bundle.getLong("patient_return_visit_id",-1);
+        if(restoredVisit>0 && auth.can("view_clinical")) showDoctorVisit(restoredVisit);
+        else if(restoredScreen==SCREEN_PATIENT_DETAIL && currentPatientId>0) showPatientDetail(currentPatientId,patientDetailReturnVisitId);
+        else if(restoredScreen==SCREEN_QUEUE) showQueue();
+        else if(restoredScreen==SCREEN_DOCTOR) showDoctor();
+        else if(restoredScreen==SCREEN_PATIENTS) showPatients("");
+        else if(restoredScreen==SCREEN_FINANCE) showFinance();
+        else if(restoredScreen==SCREEN_SETTINGS) showSettings();
+        else showHome();
     }
 
     @Override protected void onResume() {
@@ -85,8 +108,30 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        saveActiveDraft();
+        outState.putInt("screen",currentScreen);
+        outState.putLong("patient_id",currentPatientId);
+        outState.putLong("patient_return_visit_id",patientDetailReturnVisitId);
+        outState.putLong("active_visit_id",activeVisitId);
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override public void onBackPressed() {
+        if(currentScreen==SCREEN_HOME){super.onBackPressed();return;}
+        if(currentScreen==SCREEN_DOCTOR_VISIT){saveActiveDraft();showDoctor();return;}
+        if(currentScreen==SCREEN_PATIENT_DETAIL){
+            long returnVisit=patientDetailReturnVisitId;
+            patientDetailReturnVisitId=-1;
+            if(returnVisit>0) showDoctorVisit(returnVisit); else showPatients("");
+            return;
+        }
+        showHome();
+    }
+
     private void base(String title, String subtitle, int selectedNav) {
         saveActiveDraft();
+        clearActiveDraftBinding();
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(bg);
@@ -108,6 +153,17 @@ public class MainActivity extends Activity {
         TextView sub = tv(subtitle, 13, muted, false);
         sub.setPadding(0, dp(3), 0, 0);
         header.addView(sub);
+        if(auth.hasRemoteIdentity()) {
+            ClinicSyncUiState syncUiState=viewModel.syncState();
+            int waiting=syncUiState.getPending();
+            String last=syncUiState.getLastCloudSync();
+            String connectivity=isOnline()?"متصل":"بدون إنترنت — العمل محفوظ على الجهاز";
+            String syncLine=connectivity+" • معلّق: "+waiting+(last.isEmpty()?" • لم تتم مزامنة سحابية بعد":" • آخر مزامنة: "+last);
+            TextView syncState=tv(syncLine,11,waiting>0||!isOnline()?warning:primary,false);
+            syncState.setContentDescription(syncLine);
+            syncState.setPadding(0,dp(5),0,0);
+            header.addView(syncState);
+        }
         root.addView(header, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         ScrollView scroll = new ScrollView(this);
@@ -128,10 +184,14 @@ public class MainActivity extends Activity {
         bar.setPadding(dp(6), dp(4), dp(6), dp(7));
         bar.setBackgroundColor(surface);
         bar.addView(navItem("الرئيسية", selected == NAV_HOME, v -> showHome()), navParams());
-        bar.addView(navItem("الطابور", selected == NAV_QUEUE, v -> showQueue()), navParams());
-        bar.addView(navItem("المرضى", selected == NAV_PATIENTS, v -> showPatients("")), navParams());
-        if (ROLE_DOCTOR.equals(role) && !isOwnerDoctor()) bar.addView(navItem("الطبيب", false, v -> showDoctor()), navParams());
-        else bar.addView(navItem(auth.can("view_finance") ? "الحسابات" : "التحصيل", selected == NAV_FINANCE, v -> showFinance()), navParams());
+        if(ClinicAccessPolicy.canOpenQueue(auth.can("manage_queue"),auth.can("view_clinical"),auth.can("register_visits")))
+            bar.addView(navItem("الطابور", selected == NAV_QUEUE, v -> showQueue()), navParams());
+        if(ClinicAccessPolicy.canOpenPatients(auth.can("view_patients")))
+            bar.addView(navItem("المرضى", selected == NAV_PATIENTS, v -> showPatients("")), navParams());
+        if (ROLE_DOCTOR.equals(role) && ClinicAccessPolicy.canOpenDoctor(auth.can("view_clinical")) && !isOwnerDoctor())
+            bar.addView(navItem("الطبيب", currentScreen==SCREEN_DOCTOR||currentScreen==SCREEN_DOCTOR_VISIT, v -> showDoctor()), navParams());
+        else if(ClinicAccessPolicy.canOpenFinance(auth.can("view_finance"),auth.can("record_payments"),auth.can("close_day")))
+            bar.addView(navItem(auth.can("view_finance") ? "الحسابات" : "التحصيل", selected == NAV_FINANCE, v -> showFinance()), navParams());
         return bar;
     }
 
@@ -142,6 +202,8 @@ public class MainActivity extends Activity {
         t.setGravity(Gravity.CENTER);
         t.setBackground(round(selected ? Color.rgb(232, 246, 244) : Color.TRANSPARENT, 14));
         t.setOnClickListener(listener);
+        t.setContentDescription(label+(selected?"، الصفحة الحالية":""));
+        t.setFocusable(true);
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
         p.setMargins(dp(3), dp(4), dp(3), dp(4));
         t.setLayoutParams(p);
@@ -149,8 +211,9 @@ public class MainActivity extends Activity {
     }
 
     private void showHome() {
+        currentScreen=SCREEN_HOME; currentPatientId=-1;
         base("لوحة اليوم", "إدارة المرضى والطابور والكشف والحسابات بدون إنترنت", NAV_HOME);
-        ClinicDb.Stats s = db.todayStats();
+        ClinicDb.Stats s = viewModel.todayStats();
         content.addView(statRow("زيارات اليوم", String.valueOf(s.totalVisits), "في الطابور", String.valueOf(s.openQueue)));
         content.addView(space(10));
         if (auth.can("view_finance") || auth.can("close_day")) {
@@ -160,10 +223,8 @@ public class MainActivity extends Activity {
 
         if (auth.hasRemoteIdentity()) {
             LinearLayout sync = card();
-            SyncStore cloud = new SyncStore(this);
-            int pending = cloud.queuedCount();
-            int failed = cloud.failedCount();
-            int conflicts = cloud.conflictCount();
+            ClinicSyncUiState state=viewModel.syncState();
+            int pending=state.getPending(), failed=state.getFailed(), conflicts=state.getConflicts();
             boolean syncHealthy = pending == 0 && failed == 0 && conflicts == 0;
             String syncTitle = syncHealthy ? "المزامنة محدثة ✓"
                     : "انتظار " + pending + " • فشل " + failed + " • تعارض " + conflicts;
@@ -183,16 +244,18 @@ public class MainActivity extends Activity {
 
         if (ROLE_RECEPTION.equals(role)) {
             section("شغل المسجلة", "سجلي المريض ثم أرسليه للطبيب");
-            content.addView(primaryButton("تسجيل مريض جديد", v -> newPatientDialog()));
-            content.addView(space(8));
-            content.addView(secondaryButton("مريض مسجل / مقابلة / نتيجة فحوصات", v -> lookupPatientDialog()));
+            if(auth.can("register_visits")) {
+                content.addView(primaryButton("تسجيل مريض جديد", v -> newPatientDialog()));
+                content.addView(space(8));
+                content.addView(secondaryButton("مريض مسجل / مقابلة / نتيجة فحوصات", v -> lookupPatientDialog()));
+            }
             if (auth.can("record_payments")) {
                 content.addView(space(8));
                 content.addView(secondaryButton("تحصيل المبالغ المعلّقة", v -> showFinance()));
             }
         } else if (ROLE_DOCTOR.equals(role)) {
             section("شغل الطبيب", "الحالات المرسلة من المسجلة تظهر هنا");
-            content.addView(primaryButton("فتح طابور الطبيب", v -> showDoctor()));
+            if(auth.can("view_clinical")) content.addView(primaryButton("فتح طابور الطبيب", v -> showDoctor()));
             if (isOwnerDoctor()) {
                 content.addView(space(8));
                 content.addView(secondaryButton("الحسابات وإغلاق اليوم", v -> showFinance()));
@@ -206,7 +269,7 @@ public class MainActivity extends Activity {
 
         content.addView(space(18));
         section("آخر حركة في الطابور", "الحالات المفتوحة الآن");
-        List<ClinicDb.Visit> q = db.openQueue();
+        List<ClinicDb.Visit> q = (auth.can("manage_queue")||auth.can("view_clinical"))?viewModel.openQueue():new java.util.ArrayList<>();
         if (q.isEmpty()) empty("الطابور فاضي حالياً");
         else {
             int max = Math.min(4, q.size());
@@ -219,6 +282,8 @@ public class MainActivity extends Activity {
     }
 
     private void showQueue() {
+        if(!ClinicAccessPolicy.canOpenQueue(auth.can("manage_queue"),auth.can("view_clinical"),auth.can("register_visits"))){showHome();return;}
+        currentScreen=SCREEN_QUEUE; currentPatientId=-1;
         base("طابور العيادة", "من التسجيل إلى دخول الطبيب", NAV_QUEUE);
         if (!ROLE_DOCTOR.equals(role) && !db.isOperationalDayClosed()) {
             LinearLayout actions = new LinearLayout(this);
@@ -231,7 +296,7 @@ public class MainActivity extends Activity {
             content.addView(actions);
             content.addView(space(14));
         }
-        List<ClinicDb.Visit> visits = db.openQueue();
+        List<ClinicDb.Visit> visits = viewModel.openQueue();
         if (visits.isEmpty()) { empty("لا توجد حالات مفتوحة"); return; }
         for (ClinicDb.Visit v : visits) content.addView(queueCard(v, true));
     }
@@ -281,16 +346,20 @@ public class MainActivity extends Activity {
     }
 
     private void showDoctor() {
+        if(!ClinicAccessPolicy.canOpenDoctor(auth.can("view_clinical"))){showHome();return;}
+        currentScreen=SCREEN_DOCTOR; currentPatientId=-1;
         base("شاشة الطبيب", "المرضى المنتظرون والكشف الجاري", -1);
-        List<ClinicDb.Visit> list = db.doctorQueue();
+        List<ClinicDb.Visit> list = viewModel.doctorQueue();
         if (list.isEmpty()) { empty("لا يوجد مريض بانتظار الطبيب حالياً"); return; }
         for (ClinicDb.Visit visit : list) content.addView(queueCard(visit, true));
     }
 
     private void showDoctorVisit(long visitId) {
-        ClinicDb.Visit visit = db.getVisit(visitId);
+        if(!ClinicAccessPolicy.canOpenDoctor(auth.can("view_clinical"))){showHome();return;}
+        ClinicDb.Visit visit = viewModel.visit(visitId);
         if (visit == null || !ClinicDb.IN_CONSULT.equals(visit.status)) { showDoctor(); return; }
-        ClinicDb.Patient patient = db.getPatient(visit.patientId);
+        ClinicDb.Patient patient = viewModel.patient(visit.patientId);
+        currentScreen=SCREEN_DOCTOR_VISIT; currentPatientId=visit.patientId;
         base("كشف المريض", cardLabel(visit.cardNo) + " • " + visit.patientName + " • " + typeLabel(visit.type), -1);
 
         LinearLayout identity = card();
@@ -327,7 +396,7 @@ public class MainActivity extends Activity {
             content.addView(medical);
         }
 
-        List<ClinicDb.Visit> history = db.visitsForPatient(visit.patientId);
+        List<ClinicDb.Visit> history = viewModel.visitsForPatient(visit.patientId);
         int previous = Math.max(0, history.size() - 1);
         ClinicDb.Visit last = null;
         for (ClinicDb.Visit h : history) {
@@ -341,7 +410,7 @@ public class MainActivity extends Activity {
             if (!safe(last.treatment).isEmpty()) previousCard.addView(tv("العلاج: " + last.treatment, 13, ink, false));
             if (!safe(last.followup).isEmpty()) previousCard.addView(tv("المتابعة: " + last.followup, 13, muted, false));
             TextView allHistory = link("عرض كل السجل (" + previous + ") ←");
-            allHistory.setOnClickListener(v -> showPatientDetail(visit.patientId));
+            allHistory.setOnClickListener(v -> showPatientDetail(visit.patientId,visit.id));
             previousCard.addView(allHistory);
             content.addView(previousCard);
         } else {
@@ -362,31 +431,37 @@ public class MainActivity extends Activity {
         EditText oxygen = field("الأكسجين %", false); oxygen.setText(visit.oxygen);
         EditText medications = field("الأدوية: الاسم | الجرعة | التكرار | المدة", true); medications.setText(visit.medications);
 
-        if (ClinicDb.LAB_RESULT.equals(visit.type)) {
-            content.addView(labeled("نتيجة الفحوصات", labs));
-            content.addView(labeled("التشخيص بعد النتيجة", diagnosis));
-            content.addView(labeled("العلاج / التعديل", treatment));
-        } else {
-            content.addView(labeled("الشكوى", complaint));
-            content.addView(labeled("التشخيص", diagnosis));
-            content.addView(labeled("العلاج", treatment));
+        section(ClinicDb.LAB_RESULT.equals(visit.type)?"نتيجة الفحوصات":"الشكوى والفحص",
+                ClinicDb.LAB_RESULT.equals(visit.type)?"راجعي النتيجة ثم حدّثي التشخيص والعلاج":"ابدئي بسبب الحضور ثم اكتبي نتيجة الفحص السريري");
+        if(ClinicDb.LAB_RESULT.equals(visit.type)) content.addView(labeled("نتيجة الفحوصات",labs));
+        else {
+            content.addView(labeled("الشكوى الرئيسية",complaint));
+            content.addView(labeled("الفحص السريري",exam));
         }
+
+        section("التشخيص والعلاج", "المعلومات الأساسية المطلوبة لإغلاق الكشف");
+        content.addView(labeled(ClinicDb.LAB_RESULT.equals(visit.type)?"التشخيص بعد النتيجة":"التشخيص",diagnosis));
+        content.addView(labeled("العلاج والروشتة",treatment));
+        if(!ClinicDb.LAB_RESULT.equals(visit.type)) content.addView(labeled("الفحوصات المطلوبة / النتائج",labs));
+        content.addView(labeled("الأدوية والجرعات",medications));
+        content.addView(labeled("خطة المتابعة والتعليمات",followup));
 
         LinearLayout details = new LinearLayout(this);
         details.setOrientation(LinearLayout.VERTICAL);
-        if (!ClinicDb.LAB_RESULT.equals(visit.type)) details.addView(labeled("الفحوصات", labs));
-        details.addView(labeled("الفحص السريري", exam));
-        details.addView(labeled("العلامات الحيوية", temperature));
-        details.addView(bloodPressure); details.addView(pulse); details.addView(weight); details.addView(oxygen);
-        details.addView(labeled("الأدوية والجرعات", medications));
-        details.addView(labeled("المتابعة", followup));
+        details.addView(labeled("الحرارة °C",temperature));
+        details.addView(labeled("ضغط الدم",bloodPressure));
+        details.addView(labeled("النبض / دقيقة",pulse));
+        details.addView(labeled("الوزن كجم",weight));
+        details.addView(labeled("الأكسجين %",oxygen));
         details.setVisibility(View.GONE);
-        TextView detailsToggle = secondaryButton("تفاصيل إضافية: الفحص والفحوصات والمتابعة", v -> {
-            boolean open = details.getVisibility() == View.VISIBLE;
-            details.setVisibility(open ? View.GONE : View.VISIBLE);
+        TextView detailsToggle = secondaryButton("إظهار العلامات الحيوية", null);
+        detailsToggle.setOnClickListener(v -> {
+            boolean opening=details.getVisibility()!=View.VISIBLE;
+            details.setVisibility(opening?View.VISIBLE:View.GONE);
+            detailsToggle.setText(opening?"إخفاء العلامات الحيوية":"إظهار العلامات الحيوية");
+            detailsToggle.setContentDescription(detailsToggle.getText());
         });
-        content.addView(detailsToggle);
-        content.addView(details);
+        content.addView(detailsToggle); content.addView(details);
         content.addView(tv("الحفظ تلقائي عند الانتقال أو إغلاق الشاشة", 12, muted, false));
         content.addView(space(8));
 
@@ -406,16 +481,15 @@ public class MainActivity extends Activity {
                         : "الشكوى والتشخيص مطلوبان قبل إنهاء الكشف");
                 return;
             }
-            boolean ok = saveClinicalForm(visitId, complaint, exam, diagnosis, labs, treatment,
-                    followup, temperature, bloodPressure, pulse, weight, oxygen, medications, true);
-            if (ok) {
-                activeVisitId = -1;
-                toast("تم حفظ وإغلاق الزيارة");
-                openNextDoctorPatient();
-            } else {
-                toast("لم يتم الإغلاق؛ حالة الزيارة تغيرت");
-                showDoctor();
-            }
+            new AlertDialog.Builder(this).setTitle("إنهاء كشف "+visit.patientName+"؟")
+                    .setMessage("سيتم حفظ البيانات وإغلاق الزيارة ثم فتح المريض التالي إن وجد.")
+                    .setNegativeButton("مراجعة البيانات",null)
+                    .setPositiveButton("حفظ وإنهاء",(d,w)->{
+                        boolean ok=saveClinicalForm(visitId,complaint,exam,diagnosis,labs,treatment,
+                                followup,temperature,bloodPressure,pulse,weight,oxygen,medications,true);
+                        if(ok){clearActiveDraftBinding();toast("تم حفظ وإغلاق الزيارة");openNextDoctorPatient();}
+                        else {toast("لم يتم الإغلاق؛ حالة الزيارة تغيرت");showDoctor();}
+                    }).show();
         }));
     }
 
@@ -452,6 +526,13 @@ public class MainActivity extends Activity {
                 activePulse, activeWeight, activeOxygen, activeMedications, false);
     }
 
+    private void clearActiveDraftBinding() {
+        draftHandler.removeCallbacks(draftSaver);
+        activeVisitId=-1;
+        activeComplaint=activeExam=activeDiagnosis=activeLabs=activeTreatment=activeFollowup=null;
+        activeTemperature=activeBloodPressure=activePulse=activeWeight=activeOxygen=activeMedications=null;
+    }
+
     private boolean saveClinicalForm(long visitId, EditText complaint, EditText exam,
             EditText diagnosis, EditText labs, EditText treatment, EditText followup,
             EditText temperature, EditText bloodPressure, EditText pulse, EditText weight,
@@ -462,7 +543,7 @@ public class MainActivity extends Activity {
     }
 
     private void openNextDoctorPatient() {
-        List<ClinicDb.Visit> list = db.doctorQueue();
+        List<ClinicDb.Visit> list = viewModel.doctorQueue();
         for (ClinicDb.Visit next : list) {
             if (ClinicDb.IN_CONSULT.equals(next.status)) { showDoctorVisit(next.id); return; }
             if (ClinicDb.WAITING.equals(next.status) && db.startVisit(next.id)) { showDoctorVisit(next.id); return; }
@@ -471,6 +552,8 @@ public class MainActivity extends Activity {
     }
 
     private void showPatients(String query) {
+        if(!ClinicAccessPolicy.canOpenPatients(auth.can("view_patients"))){showHome();return;}
+        currentScreen=SCREEN_PATIENTS; currentPatientId=-1;
         base("سجل المرضى", "البحث بالكرت أو الاسم أو رقم الهاتف", NAV_PATIENTS);
         LinearLayout searchBox = new LinearLayout(this);
         searchBox.setOrientation(LinearLayout.HORIZONTAL);
@@ -484,7 +567,7 @@ public class MainActivity extends Activity {
         content.addView(searchBox);
         content.addView(space(14));
 
-        List<ClinicDb.Patient> list = db.searchPatients(query);
+        List<ClinicDb.Patient> list = viewModel.searchPatients(query);
         if (list.isEmpty()) { empty("ما لقينا مريض بالمعلومة دي"); return; }
         for (ClinicDb.Patient p : list) {
             LinearLayout c = card();
@@ -499,8 +582,14 @@ public class MainActivity extends Activity {
     }
 
     private void showPatientDetail(long patientId) {
-        ClinicDb.Patient p = db.getPatient(patientId);
+        showPatientDetail(patientId,-1);
+    }
+
+    private void showPatientDetail(long patientId,long returnVisitId) {
+        ClinicDb.Patient p = viewModel.patient(patientId);
         if (p == null) { showPatients(""); return; }
+        patientDetailReturnVisitId=returnVisitId;
+        currentScreen=SCREEN_PATIENT_DETAIL; currentPatientId=patientId;
         base("ملف المريض", auth.can("view_clinical") ? "السجل الطبي والزيارات السابقة" : "بيانات المريض والزيارات", NAV_PATIENTS);
         LinearLayout profile = card();
         profile.addView(tv(p.name, 23, ink, true));
@@ -532,7 +621,7 @@ public class MainActivity extends Activity {
         }
         content.addView(space(18));
         section("تاريخ الزيارات", "الأحدث أولاً");
-        List<ClinicDb.Visit> visits = db.visitsForPatient(patientId);
+        List<ClinicDb.Visit> visits = viewModel.visitsForPatient(patientId);
         if (visits.isEmpty()) empty("لا توجد زيارات سابقة");
         for (ClinicDb.Visit visit : visits) {
             LinearLayout c = card();
@@ -562,20 +651,27 @@ public class MainActivity extends Activity {
         boolean canViewFinance = auth.can("view_finance") || auth.can("close_day");
         boolean canCollect = auth.can("record_payments");
         if (!canViewFinance && !canCollect) { showHome(); return; }
+        currentScreen=SCREEN_FINANCE; currentPatientId=-1;
         base(canViewFinance ? "حسابات اليوم" : "التحصيل",
                 canViewFinance ? "التحصيل والمدفوعات وإغلاق اليوم" : "تسجيل الدفعات للزيارات المعلّقة",
                 NAV_FINANCE);
-        ClinicDb.Stats s = db.todayStats();
+        ClinicDb.Stats s = viewModel.todayStats();
         if (canViewFinance) {
             content.addView(statRow("رسوم زيارات اليوم", money(s.totalCharges), "المقبوض اليوم", money(s.totalPaid)));
             content.addView(space(10));
             content.addView(statRow("متبقي زيارات اليوم", money(s.outstanding), "المعفاة", String.valueOf(s.waivedVisits)));
+            content.addView(space(10));
+            content.addView(statRow("المبالغ المعكوسة/المستردة", money(s.refunded), "الزيارات الملغاة", String.valueOf(s.cancelledVisits)));
+            LinearLayout methods = card();
+            methods.addView(tv("طرق الدفع (صافي اليوم)", 15, ink, true));
+            methods.addView(tv("كاش: " + money(s.cash) + "  •  تحويل: " + money(s.bank) + "\nمحفظة: " + money(s.wallet) + "  •  أخرى: " + money(s.other), 13, muted, false));
+            content.addView(methods);
             content.addView(space(16));
         }
         section("مبالغ غير مكتملة", canViewFinance
                 ? "يمكن تسجيل دفع كامل أو جزئي قبل إغلاق اليوم"
                 : "يمكنك تسجيل الدفع فقط؛ ملخص اليوم متاح للإدارة");
-        List<ClinicDb.Visit> unpaid = db.unpaidToday();
+        List<ClinicDb.Visit> unpaid = viewModel.unpaidToday();
         if (unpaid.isEmpty()) empty("ما في مبالغ معلّقة لليوم");
         for (ClinicDb.Visit visit : unpaid) {
             LinearLayout c = card();
@@ -588,6 +684,30 @@ public class MainActivity extends Activity {
             }
             content.addView(c);
         }
+        section("ديون الأيام السابقة", "تظل ظاهرة حتى اكتمال التحصيل ولا تختفي بإغلاق اليوم");
+        List<ClinicDb.Debt> debts=viewModel.olderDebts();
+        if (debts.isEmpty()) empty("ما في ديون سابقة");
+        for (ClinicDb.Debt debt:debts) {
+            LinearLayout c=card(); c.addView(tv(debt.patientName+"  •  "+cardLabel(debt.cardNo),16,ink,true));
+            c.addView(tv("المتبقي: "+money(debt.remaining())+"  •  "+debt.createdAt,13,warning,true));
+            if (canCollect && !db.isOperationalDayClosed()) c.addView(primaryButton("تحصيل من الدين",v->{ ClinicDb.Visit visit=viewModel.visit(debt.visitId); if(visit!=null) paymentDialog(visit); }));
+            content.addView(c);
+        }
+        if (canViewFinance) {
+            section("حركة الدفع اليوم", "الدفعات والتصحيحات محفوظة باسم المنفّذ والسبب");
+            List<ClinicDb.Payment> payments=viewModel.recentPaymentsToday();
+            if (payments.isEmpty()) empty("ما في حركة دفع اليوم");
+            for (ClinicDb.Payment payment:payments) {
+                LinearLayout c=card();
+                String sign=payment.amount<0?"−":"+";
+                c.addView(tv(payment.patientName+"  •  "+sign+money(Math.abs(payment.amount)),15,ink,true));
+                c.addView(tv(payment.method+"  •  "+payment.eventType+(payment.actorName.isEmpty()?"":"  •  "+payment.actorName),12,muted,false));
+                if (!payment.reason.isEmpty()) c.addView(tv("السبب: "+payment.reason,12,warning,false));
+                if (isOwnerDoctor() && payment.amount>0 && !payment.reversed && !db.isOperationalDayClosed())
+                    c.addView(secondaryButton("إلغاء / استرداد / تصحيح",v->paymentAdjustmentDialog(payment)));
+                content.addView(c);
+            }
+        }
         if (!auth.can("close_day")) return;
         content.addView(space(16));
         boolean closed = db.isTodayClosed();
@@ -597,8 +717,10 @@ public class MainActivity extends Activity {
             warn.addView(tv("في " + s.openQueue + " حالة لسه مفتوحة في الطابور. أكمليها أولاً.", 13, muted, false));
             content.addView(warn);
         }
-        TextView close = closed ? secondaryButton("اليوم مقفول ✓", v -> toast("تم إغلاق اليوم مسبقاً")) : primaryButton("إغلاق حساب اليوم", v -> {
-            ClinicDb.Stats latest = db.todayStats();
+        TextView close = closed ? secondaryButton(isOwnerDoctor()?"اليوم مقفول ✓ — إعادة فتح إدارية":"اليوم مقفول ✓", v -> {
+            if (isOwnerDoctor()) reopenDayDialog(); else toast("تم إغلاق اليوم؛ إعادة الفتح متاحة للإدارة فقط");
+        }) : primaryButton("إغلاق حساب اليوم", v -> {
+            ClinicDb.Stats latest = viewModel.todayStats();
             if (latest.openQueue > 0) { toast("أكملي كل الحالات المفتوحة قبل إغلاق اليوم"); return; }
             new AlertDialog.Builder(this)
                     .setTitle("إغلاق حساب اليوم؟")
@@ -612,7 +734,37 @@ public class MainActivity extends Activity {
         content.addView(close);
     }
 
+    private void reopenDayDialog() {
+        EditText reason=field("سبب إعادة الفتح",false);
+        LinearLayout box=dialogBox();
+        box.addView(tv("ستعود العمليات المالية للعمل، وسيُحفظ اسم المنفّذ والسبب في سجل المراجعة.",13,muted,false));
+        box.addView(space(8)); box.addView(reason);
+        validatedDialog("إعادة فتح اليوم؟",box,"إعادة فتح",()->{
+            if(str(reason).trim().length()<3){reason.setError("اكتبي سبباً واضحاً");return false;}
+            if(!db.reopenToday(str(reason))){toast("تعذرت إعادة الفتح");return false;}
+            toast("تمت إعادة فتح اليوم إدارياً");showFinance();return true;
+        });
+    }
+
+    private void paymentAdjustmentDialog(ClinicDb.Payment payment) {
+        LinearLayout box=dialogBox();
+        Spinner type=spinner(new String[]{"إلغاء كامل","استرداد كامل","تصحيح المبلغ"});
+        EditText amount=field("المبلغ الصحيح (للتصحيح فقط)",false); amount.setInputType(InputType.TYPE_CLASS_NUMBER); amount.setText(String.valueOf(payment.amount));
+        EditText reason=field("سبب العملية",false);
+        box.addView(type); box.addView(space(8)); box.addView(amount); box.addView(space(8)); box.addView(reason);
+        validatedDialog("مراجعة دفعة "+money(payment.amount),box,"حفظ القيد العكسي",()->{
+                    String selected=String.valueOf(type.getSelectedItem());
+                    String event=selected.startsWith("إلغاء")?"VOID":selected.startsWith("استرداد")?"REFUND":"CORRECTION";
+                    int replacement="CORRECTION".equals(event)?intValue(amount,0):0;
+                    if(str(reason).trim().length()<3){reason.setError("اكتبي سبباً واضحاً");return false;}
+                    if("CORRECTION".equals(event)&&replacement<=0){amount.setError("اكتبي المبلغ الصحيح");return false;}
+                    if(!db.reversePayment(payment.id,event,replacement,str(reason))){toast("تعذرت العملية أو اليوم مقفول");return false;}
+                    toast("تم حفظ القيد العكسي بدون حذف الدفعة الأصلية");showFinance();return true;
+                });
+    }
+
     private void showSettings() {
+        currentScreen=SCREEN_SETTINGS; currentPatientId=-1;
         base("إعدادات وأدوات العيادة", "الحساب، المزامنة وأدوات الإدارة", -1);
         if (isOwnerDoctor()) {
             EditText clinic = field("اسم العيادة", false); clinic.setText(prefs.getString("clinic_name", "العيادة"));
@@ -636,6 +788,8 @@ public class MainActivity extends Activity {
                         .putInt("visit_fee", feeValue)
                         .putInt("result_fee", resultValue)
                         .putInt("followup_days", followValue).apply();
+                db.markFinanceSettingsDirty();
+                SyncCoordinator.kick(this);
                 toast("تم حفظ الإعدادات"); showHome();
             }));
             content.addView(space(10));
@@ -700,40 +854,34 @@ public class MainActivity extends Activity {
         box.addView(name); box.addView(space(8)); box.addView(phone); box.addView(space(8));
         if (auth.can("edit_clinical")) { box.addView(age); box.addView(space(8)); }
         box.addView(gender);
-        new AlertDialog.Builder(this)
-                .setTitle("تسجيل مريض جديد")
-                .setView(box)
-                .setNegativeButton("إلغاء", null)
-                .setPositiveButton("تسجيل", (d, w) -> {
+        validatedDialog("تسجيل مريض جديد",box,"تسجيل",()->{
                     String n = str(name).trim();
-                    if (n.length() < 2) { toast("اكتبي اسم المريض"); return; }
+                    if (n.length() < 2) { name.setError("اكتبي اسم المريض"); return false; }
                     ClinicDb.RegistrationResult result = db.registerPatientWithVisit(n, str(phone),
                             String.valueOf(gender.getSelectedItem()),
                             auth.can("edit_clinical") ? str(age) : "", ClinicDb.NEW, visitFee());
                     if (result.code == -3) {
                         toast("رقم الهاتف مسجل لمريض موجود؛ تم فتح ملفه");
                         showPatientDetail(result.patientId);
-                        return;
+                        return true;
                     }
-                    if (result.code == -2) { toast("حساب اليوم مقفول؛ لم يتم إنشاء سجل ناقص"); return; }
-                    if (!result.success()) { toast("ما عندك صلاحية أو البيانات غير صحيحة"); return; }
+                    if (result.code == -2) { toast("حساب اليوم مقفول؛ لم يتم إنشاء سجل ناقص"); return false; }
+                    if (!result.success()) { toast("ما عندك صلاحية أو البيانات غير صحيحة"); return false; }
                     long patientId = result.patientId;
-                    ClinicDb.Patient p = db.getPatient(patientId);
+                    ClinicDb.Patient p = viewModel.patient(patientId);
                     toast("تم التسجيل • " + (p == null ? "" : cardLabel(p.cardNo)));
                     showQueue();
-                }).show();
+                    return true;
+                });
     }
 
     private void cancelVisitDialog(ClinicDb.Visit visit) {
         EditText reason = field("سبب الإلغاء", true);
-        new AlertDialog.Builder(this)
-                .setTitle("إلغاء زيارة " + visit.patientName)
-                .setView(reason)
-                .setNegativeButton("رجوع", null)
-                .setPositiveButton("إلغاء الزيارة", (d, w) -> {
-                    if (db.cancelVisit(visit.id, str(reason))) { toast("تم إلغاء الزيارة"); showQueue(); }
-                    else toast("اكتبي سبباً واضحاً أو حدّثي حالة الزيارة");
-                }).show();
+        validatedDialog("إلغاء زيارة "+visit.patientName,reason,"إلغاء الزيارة",()->{
+            if(str(reason).trim().length()<3){reason.setError("اكتبي سبباً واضحاً");return false;}
+            if(!db.cancelVisit(visit.id,str(reason))){toast("حالة الزيارة تغيرت؛ حدّثي الطابور");return false;}
+            toast("تم إلغاء الزيارة");showQueue();return true;
+        });
     }
 
     private void editVisitDialog(ClinicDb.Visit visit) {
@@ -748,13 +896,14 @@ public class MainActivity extends Activity {
         EditText fee = field("الرسوم", false); fee.setInputType(InputType.TYPE_CLASS_NUMBER);
         fee.setText(String.valueOf(visit.fee));
         LinearLayout box = dialogBox(); box.addView(type); box.addView(space(8)); box.addView(fee);
-        new AlertDialog.Builder(this).setTitle("تعديل الزيارة").setView(box)
-                .setNegativeButton("إلغاء", null)
-                .setPositiveButton("حفظ", (d, w) -> {
-                    if (db.updateVisitRegistration(visit.id, types[type.getSelectedItemPosition()],
-                            intValue(fee, 0))) { toast("تم تعديل الزيارة"); showQueue(); }
-                    else toast("تعذر التعديل؛ ربما تغيرت حالة الزيارة");
-                }).show();
+        validatedDialog("تعديل الزيارة",box,"حفظ",()->{
+            int value=intValue(fee,-1);
+            if(value<0){fee.setError("اكتبي رسوماً صحيحة");return false;}
+            if(!db.updateVisitRegistration(visit.id,types[type.getSelectedItemPosition()],value)){
+                toast("تعذر التعديل؛ ربما تغيرت حالة الزيارة");return false;
+            }
+            toast("تم تعديل الزيارة");showQueue();return true;
+        });
     }
 
     private void patientMedicalDialog(ClinicDb.Patient patient, Runnable afterSave) {
@@ -768,33 +917,29 @@ public class MainActivity extends Activity {
         box.addView(labeled("الحساسية", allergies));
         box.addView(labeled("الأمراض المزمنة", chronic));
         box.addView(labeled("الأدوية الحالية", medications));
-        new AlertDialog.Builder(this)
-                .setTitle("المعلومات الطبية الأساسية")
-                .setView(box)
-                .setNegativeButton("إلغاء", null)
-                .setPositiveButton("حفظ", (d, w) -> {
+        validatedDialog("المعلومات الطبية الأساسية",box,"حفظ",()->{
                     boolean ok = db.updatePatientMedical(patient.id, str(age), str(allergies), str(chronic), str(medications));
                     if (ok) {
                         SyncCoordinator.kick(this);
                         LocalSyncManager.kick(this);
                         toast("تم حفظ المعلومات الطبية");
                         if (afterSave != null) afterSave.run();
-                    } else toast("تعذر الحفظ أو لا توجد صلاحية");
-                }).show();
+                        return true;
+                    }
+                    toast("تعذر الحفظ أو لا توجد صلاحية");return false;
+                });
     }
 
     private void lookupPatientDialog() {
         LinearLayout box = dialogBox();
         EditText q = field("رقم الكرت أو الهاتف أو الاسم", false);
         box.addView(q);
-        new AlertDialog.Builder(this)
-                .setTitle("البحث عن مريض")
-                .setView(box)
-                .setNegativeButton("إلغاء", null)
-                .setPositiveButton("بحث", (d, w) -> {
+        validatedDialog("البحث عن مريض",box,"بحث",()->{
+                    if(str(q).trim().isEmpty()){q.setError("اكتبي رقم الكرت أو الهاتف أو الاسم");return false;}
                     ClinicDb.Patient p = db.findPatient(str(q));
-                    if (p == null) toast("المريض غير موجود"); else showPatientDetail(p.id);
-                }).show();
+                    if(p==null){q.setError("المريض غير موجود");return false;}
+                    showPatientDetail(p.id);return true;
+                });
     }
 
     private void existingVisitDialog(ClinicDb.Patient patient, boolean forceResult) {
@@ -827,17 +972,13 @@ public class MainActivity extends Activity {
         Spinner method = spinner(new String[]{"كاش", "تحويل بنكي", "محفظة", "أخرى"});
         box.addView(tv("المتبقي على " + visit.patientName + ": " + money(visit.remaining()), 14, muted, false));
         box.addView(space(8)); box.addView(amount); box.addView(space(8)); box.addView(method);
-        new AlertDialog.Builder(this)
-                .setTitle("تسجيل دفعة")
-                .setView(box)
-                .setNegativeButton("إلغاء", null)
-                .setPositiveButton("حفظ", (d, w) -> {
+        validatedDialog("تسجيل دفعة",box,"حفظ",()->{
                     int a = intValue(amount, 0);
-                    if (a <= 0) { toast("اكتبي مبلغ صحيح"); return; }
-                    if (a > visit.remaining()) { toast("المبلغ أكبر من المتبقي"); return; }
-                    if (db.recordPayment(visit.id, a, String.valueOf(method.getSelectedItem()))) { toast("تم تسجيل الدفعة"); showFinance(); }
-                    else toast("المبلغ غير صحيح أو اليوم مقفول");
-                }).show();
+                    if(a<=0){amount.setError("اكتبي مبلغاً صحيحاً");return false;}
+                    if(a>visit.remaining()){amount.setError("المبلغ أكبر من المتبقي");return false;}
+                    if(!db.recordPayment(visit.id,a,String.valueOf(method.getSelectedItem()))){toast("المبلغ غير صحيح أو اليوم مقفول");return false;}
+                    toast("تم تسجيل الدفعة");showFinance();return true;
+                });
     }
 
     private LinearLayout statRow(String l1, String v1, String l2, String v2) {
@@ -898,6 +1039,7 @@ public class MainActivity extends Activity {
         e.setHintTextColor(muted);
         e.setPadding(dp(13), dp(10), dp(13), dp(10));
         e.setBackground(strokeBg(surface, line, 14));
+        e.setContentDescription(hint);
         if (multiline) { e.setMinLines(2); e.setGravity(Gravity.TOP | Gravity.RIGHT); e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES); }
         else e.setSingleLine(true);
         return e;
@@ -909,6 +1051,8 @@ public class MainActivity extends Activity {
         s.setAdapter(adapter);
         s.setPadding(dp(8), dp(4), dp(8), dp(4));
         s.setBackground(strokeBg(surface, line, 14));
+        s.setContentDescription("اختيار من القائمة");
+        s.setMinimumHeight(dp(48));
         return s;
     }
 
@@ -919,6 +1063,17 @@ public class MainActivity extends Activity {
         return box;
     }
 
+    private interface DialogAction { boolean run(); }
+
+    private void validatedDialog(String title, View view, String positive, DialogAction action) {
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(title).setView(view)
+                .setNegativeButton("رجوع",null).setPositiveButton(positive,null).create();
+        dialog.setOnShowListener(x->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            if(action.run()) dialog.dismiss();
+        }));
+        dialog.show();
+    }
+
     private TextView primaryButton(String text, View.OnClickListener click) { return button(text, primary, Color.WHITE, click); }
     private TextView secondaryButton(String text, View.OnClickListener click) { return button(text, Color.rgb(235, 242, 242), primaryDark, click); }
 
@@ -927,6 +1082,7 @@ public class MainActivity extends Activity {
         t.setGravity(Gravity.CENTER);
         t.setBackground(strokeBg(solid ? primary : surface, solid ? primary : line, 13));
         t.setOnClickListener(click);
+        t.setContentDescription(text); t.setFocusable(true); t.setMinHeight(dp(48));
         return t;
     }
 
@@ -937,12 +1093,15 @@ public class MainActivity extends Activity {
         t.setBackground(round(back, 14));
         t.setOnClickListener(click);
         t.setMinHeight(dp(48));
+        t.setContentDescription(text);
+        t.setFocusable(true);
         return t;
     }
 
     private TextView link(String text) {
         TextView t = tv(text, 14, primary, true);
         t.setPadding(dp(4), dp(8), dp(4), dp(8));
+        t.setContentDescription(text); t.setFocusable(true); t.setMinHeight(dp(48));
         return t;
     }
 
@@ -951,6 +1110,7 @@ public class MainActivity extends Activity {
         t.setPadding(dp(10), dp(6), dp(10), dp(6));
         t.setGravity(Gravity.CENTER);
         t.setBackground(round(back, 99));
+        t.setContentDescription(text);
         return t;
     }
 
@@ -981,6 +1141,13 @@ public class MainActivity extends Activity {
     }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+    private boolean isOnline() {
+        ConnectivityManager manager=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);
+        if(manager==null) return false;
+        Network network=manager.getActiveNetwork();
+        NetworkCapabilities capabilities=network==null?null:manager.getNetworkCapabilities(network);
+        return capabilities!=null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+    }
     private String str(EditText e) { return e == null || e.getText() == null ? "" : e.getText().toString(); }
     private int intValue(EditText e, int fallback) { try { return Integer.parseInt(str(e).trim()); } catch (Exception ex) { return fallback; } }
     private int visitFee() { return prefs.getInt("visit_fee", 10000); }

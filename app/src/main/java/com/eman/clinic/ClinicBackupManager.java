@@ -18,12 +18,12 @@ import java.util.Set;
 
 /** Creates and restores logical clinic backups without copying auth tokens or device secrets. */
 public final class ClinicBackupManager {
-    private static final int FORMAT = 2;
+    private static final int FORMAT = 3;
 
     private static final String[] PATIENT_COLS = {"id","card_no","full_name","phone","normalized_phone","gender","age_text","allergies","chronic_conditions","current_medications","created_at"};
     private static final String[] VISIT_COLS = {"id","patient_id","visit_type","status","fee","paid_amount","complaint","exam","diagnosis","labs","treatment","followup","assigned_doctor_user_id","assigned_doctor_name","followup_of_visit_id","cancellation_reason","cancelled_at","reopened_at","temperature","blood_pressure","pulse","weight","oxygen","medications_text","draft_saved_at","created_at","started_at","completed_at"};
-    private static final String[] PAYMENT_COLS = {"id","visit_id","amount","method","created_at"};
-    private static final String[] CLOSURE_COLS = {"id","day","total_visits","total_charges","total_paid","total_waived","outstanding","closed_at"};
+    private static final String[] PAYMENT_COLS = {"id","visit_id","amount","method","event_type","reversal_of_payment_id","reason","actor_user_id","actor_display_name","actor_role","created_at"};
+    private static final String[] CLOSURE_COLS = {"id","day","total_visits","total_charges","total_paid","total_waived","outstanding","closed_at","is_reopened","reopen_count","last_reopened_at","last_reopened_by_user_id","last_reopened_by_name","last_reopen_reason"};
     private static final String[] AUDIT_COLS = {"id","action","entity_type","entity_id","details","actor_user_id","actor_display_name","actor_role","created_at"};
     private static final String[] KEY_COLS = {"entity_type","local_id","sync_key","remote_version"};
     private static final String[] DIRTY_COLS = {"entity_type","local_id","changed_at","attempt_count","last_error","next_retry_at","sync_status"};
@@ -60,8 +60,8 @@ public final class ClinicBackupManager {
         JSONObject data = new JSONObject();
         data.put("patients", query(db, "SELECT id,card_no,full_name,phone,normalized_phone,gender,age_text,allergies,chronic_conditions,current_medications,created_at FROM patients ORDER BY id", PATIENT_COLS));
         data.put("visits", query(db, "SELECT id,patient_id,visit_type,status,fee,paid_amount,complaint,exam,diagnosis,labs,treatment,followup,assigned_doctor_user_id,assigned_doctor_name,followup_of_visit_id,cancellation_reason,cancelled_at,reopened_at,temperature,blood_pressure,pulse,weight,oxygen,medications_text,draft_saved_at,created_at,started_at,completed_at FROM visits ORDER BY id", VISIT_COLS));
-        data.put("payments", query(db, "SELECT id,visit_id,amount,method,created_at FROM payments ORDER BY id", PAYMENT_COLS));
-        data.put("day_closures", query(db, "SELECT id,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at FROM day_closures ORDER BY id", CLOSURE_COLS));
+        data.put("payments", query(db, "SELECT id,visit_id,amount,method,event_type,reversal_of_payment_id,reason,actor_user_id,actor_display_name,actor_role,created_at FROM payments ORDER BY id", PAYMENT_COLS));
+        data.put("day_closures", query(db, "SELECT id,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at,is_reopened,reopen_count,last_reopened_at,last_reopened_by_user_id,last_reopened_by_name,last_reopen_reason FROM day_closures ORDER BY id", CLOSURE_COLS));
         data.put("audit_log", query(db, "SELECT id,action,entity_type,entity_id,details,actor_user_id,actor_display_name,actor_role,created_at FROM audit_log ORDER BY id", AUDIT_COLS));
         data.put("sync_entity_keys", query(db, "SELECT entity_type,local_id,sync_key,remote_version FROM sync_entity_keys ORDER BY entity_type,local_id", KEY_COLS));
         data.put("sync_dirty", query(db, "SELECT entity_type,local_id,changed_at,attempt_count,last_error,next_retry_at,sync_status FROM sync_dirty ORDER BY changed_at", DIRTY_COLS));

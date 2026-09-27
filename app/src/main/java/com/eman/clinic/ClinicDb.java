@@ -17,7 +17,7 @@ import java.util.Locale;
 import java.util.Set;
 
 public class ClinicDb extends SQLiteOpenHelper {
-    private static final int DATABASE_VERSION = 7;
+    private static final int DATABASE_VERSION = 8;
     private static final String LEGACY_DATABASE = "clinic_offline.db";
     public static final String NEW = "NEW";
     public static final String FREE_FOLLOWUP = "FREE_FOLLOWUP";
@@ -115,20 +115,38 @@ public class ClinicDb extends SQLiteOpenHelper {
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_patients_normalized_phone ON patients(normalized_phone)");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_assigned_doctor ON visits(assigned_doctor_user_id,status)");
         }
+        if (oldVersion < 8) addFinanceAuditSchema(db);
         createSyncSchema(db);
     }
 
     private static void createCoreSchema(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE IF NOT EXISTS patients (id INTEGER PRIMARY KEY AUTOINCREMENT, card_no INTEGER NOT NULL UNIQUE, full_name TEXT NOT NULL, phone TEXT, normalized_phone TEXT NOT NULL DEFAULT '', gender TEXT, age_text TEXT NOT NULL DEFAULT '', allergies TEXT NOT NULL DEFAULT '', chronic_conditions TEXT NOT NULL DEFAULT '', current_medications TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
         db.execSQL("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', assigned_doctor_user_id TEXT NOT NULL DEFAULT '', assigned_doctor_name TEXT NOT NULL DEFAULT '', followup_of_visit_id INTEGER, cancellation_reason TEXT NOT NULL DEFAULT '', cancelled_at TEXT, reopened_at TEXT, temperature TEXT NOT NULL DEFAULT '', blood_pressure TEXT NOT NULL DEFAULT '', pulse TEXT NOT NULL DEFAULT '', weight TEXT NOT NULL DEFAULT '', oxygen TEXT NOT NULL DEFAULT '', medications_text TEXT NOT NULL DEFAULT '', draft_saved_at TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE RESTRICT, FOREIGN KEY(followup_of_visit_id) REFERENCES visits(id) ON DELETE SET NULL)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(visit_id) REFERENCES visits(id) ON DELETE RESTRICT)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, event_type TEXT NOT NULL DEFAULT 'PAYMENT', reversal_of_payment_id INTEGER, reason TEXT NOT NULL DEFAULT '', actor_user_id TEXT NOT NULL DEFAULT '', actor_display_name TEXT NOT NULL DEFAULT '', actor_role TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, FOREIGN KEY(visit_id) REFERENCES visits(id) ON DELETE RESTRICT, FOREIGN KEY(reversal_of_payment_id) REFERENCES payments(id) ON DELETE RESTRICT)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL, is_reopened INTEGER NOT NULL DEFAULT 0, reopen_count INTEGER NOT NULL DEFAULT 0, last_reopened_at TEXT, last_reopened_by_user_id TEXT NOT NULL DEFAULT '', last_reopened_by_name TEXT NOT NULL DEFAULT '', last_reopen_reason TEXT NOT NULL DEFAULT '')");
         db.execSQL("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT, actor_user_id TEXT NOT NULL DEFAULT '', actor_display_name TEXT NOT NULL DEFAULT '', actor_role TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_patient ON visits(patient_id)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_payments_visit ON payments(visit_id)");
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_one_reversal ON payments(reversal_of_payment_id) WHERE reversal_of_payment_id IS NOT NULL");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_patients_normalized_phone ON patients(normalized_phone)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_assigned_doctor ON visits(assigned_doctor_user_id,status)");
+    }
+
+    private static void addFinanceAuditSchema(SQLiteDatabase db) {
+        addColumnIfMissing(db, "payments", "event_type", "TEXT NOT NULL DEFAULT 'PAYMENT'");
+        addColumnIfMissing(db, "payments", "reversal_of_payment_id", "INTEGER REFERENCES payments(id) ON DELETE RESTRICT");
+        addColumnIfMissing(db, "payments", "reason", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "payments", "actor_user_id", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "payments", "actor_display_name", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "payments", "actor_role", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "day_closures", "is_reopened", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "day_closures", "reopen_count", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, "day_closures", "last_reopened_at", "TEXT");
+        addColumnIfMissing(db, "day_closures", "last_reopened_by_user_id", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "day_closures", "last_reopened_by_name", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(db, "day_closures", "last_reopen_reason", "TEXT NOT NULL DEFAULT ''");
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_one_reversal ON payments(reversal_of_payment_id) WHERE reversal_of_payment_id IS NOT NULL");
     }
 
     private static void createSyncSchema(SQLiteDatabase db) {
@@ -427,7 +445,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public boolean startVisit(long visitId) {
-        if (!can("manage_queue")) return false;
+        if (!can("manage_queue") || !can("edit_clinical")) return false;
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("status", IN_CONSULT);
@@ -451,7 +469,8 @@ public class ClinicDb extends SQLiteOpenHelper {
         if (!can("edit_clinical")) return false;
         SQLiteDatabase db = getWritableDatabase();
         Visit current = getVisitInternal(db, visitId);
-        if (current == null || !IN_CONSULT.equals(current.status)) return false;
+        if (current == null || !ClinicClinicalAccessRules.canEditVisit(
+                auth.memberRole(), auth.userId(), current.assignedDoctorUserId, current.status)) return false;
         if (complete && !ClinicWorkflowRules.canCompleteClinical(
                 current.type, complaint, diagnosis, labs)) return false;
         ContentValues v = new ContentValues();
@@ -504,6 +523,9 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public boolean transferVisit(long visitId) {
         if (!can("edit_clinical")) return false;
+        Visit current = getVisitInternal(getReadableDatabase(), visitId);
+        if (current == null || !ClinicClinicalAccessRules.canTransferVisit(
+                auth.memberRole(), auth.userId(), current.assignedDoctorUserId, current.status)) return false;
         ContentValues v = new ContentValues();
         v.put("status", WAITING); v.put("assigned_doctor_user_id", "");
         v.put("assigned_doctor_name", ""); v.putNull("started_at");
@@ -528,6 +550,8 @@ public class ClinicDb extends SQLiteOpenHelper {
             pay.put("visit_id", visitId);
             pay.put("amount", requestedAmount);
             pay.put("method", safe(method));
+            pay.put("event_type", "PAYMENT");
+            putActor(pay);
             pay.put("created_at", now());
             long paymentId = db.insertOrThrow("payments", null, pay);
 
@@ -540,6 +564,72 @@ public class ClinicDb extends SQLiteOpenHelper {
         } finally {
             db.endTransaction();
         }
+    }
+
+    public boolean reversePayment(long paymentId, String eventType, int replacementAmount, String reason) {
+        String cleanReason = safe(reason).trim();
+        if (!ClinicFinanceRules.canBeginReversal("owner_doctor".equals(auth.memberRole()),
+                isTodayClosedInternal(), cleanReason, eventType)) return false;
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            Cursor c = db.rawQuery("SELECT visit_id,amount,method,event_type FROM payments WHERE id=?", new String[]{String.valueOf(paymentId)});
+            if (!c.moveToFirst() || c.getInt(1) <= 0 || !"PAYMENT".equals(c.getString(3))) { c.close(); return false; }
+            long visitId = c.getLong(0); int originalAmount = c.getInt(1); String method = c.getString(2); c.close();
+            Cursor reversed = db.rawQuery("SELECT 1 FROM payments WHERE reversal_of_payment_id=? LIMIT 1", new String[]{String.valueOf(paymentId)});
+            boolean already = reversed.moveToFirst(); reversed.close();
+            if (already || ("CORRECTION".equals(eventType) && replacementAmount <= 0)) return false;
+            Visit visit=getVisitInternal(db,visitId);
+            if("CORRECTION".equals(eventType) && (visit==null || !ClinicFinanceRules.canReplacePayment(
+                    visit.fee,visit.paidAmount,originalAmount,replacementAmount))) return false;
+
+            ContentValues reversal = new ContentValues();
+            reversal.put("visit_id", visitId); reversal.put("amount", -originalAmount); reversal.put("method", method);
+            reversal.put("event_type", eventType); reversal.put("reversal_of_payment_id", paymentId);
+            reversal.put("reason", cleanReason); putActor(reversal); reversal.put("created_at", now());
+            long reversalId = db.insertOrThrow("payments", null, reversal);
+            if ("CORRECTION".equals(eventType)) {
+                ContentValues replacement = new ContentValues();
+                replacement.put("visit_id", visitId); replacement.put("amount", replacementAmount); replacement.put("method", method);
+                replacement.put("event_type", "PAYMENT"); replacement.put("reason", "تصحيح للدفعة رقم " + paymentId + ": " + cleanReason);
+                putActor(replacement); replacement.put("created_at", now());
+                db.insertOrThrow("payments", null, replacement);
+            }
+            recomputePaidAmount(db, visitId);
+            audit(db, eventType + "_PAYMENT", "payment", reversalId,
+                    "original=" + paymentId + ", reason=" + cleanReason + ", replacement=" + replacementAmount);
+            db.setTransactionSuccessful();
+            return true;
+        } finally { db.endTransaction(); }
+    }
+
+    public List<Payment> recentPaymentsToday() {
+        List<Payment> out = new ArrayList<>();
+        if (!(canFinanceRead() || can("record_payments"))) return out;
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT p.id,p.visit_id,p.amount,p.method,p.event_type,p.reason,p.actor_display_name,p.created_at,pt.full_name," +
+                        "EXISTS(SELECT 1 FROM payments r WHERE r.reversal_of_payment_id=p.id) " +
+                        "FROM payments p JOIN visits v ON v.id=p.visit_id JOIN patients pt ON pt.id=v.patient_id " +
+                        "WHERE date(p.created_at)=date('now','localtime') ORDER BY p.id DESC LIMIT 50", null);
+        while (c.moveToNext()) {
+            Payment p = new Payment(); p.id=c.getLong(0); p.visitId=c.getLong(1); p.amount=c.getInt(2);
+            p.method=safe(c.getString(3)); p.eventType=safe(c.getString(4)); p.reason=safe(c.getString(5));
+            p.actorName=safe(c.getString(6)); p.createdAt=safe(c.getString(7)); p.patientName=safe(c.getString(8)); p.reversed=c.getInt(9)>0;
+            out.add(p);
+        }
+        c.close(); return out;
+    }
+
+    public List<Debt> olderDebts() {
+        List<Debt> out = new ArrayList<>();
+        if (!(canFinanceRead() || can("record_payments"))) return out;
+        Cursor c = getReadableDatabase().rawQuery(
+                "SELECT v.id,pt.full_name,pt.card_no,v.created_at,v.fee,v.paid_amount " +
+                        "FROM visits v JOIN patients pt ON pt.id=v.patient_id WHERE v.status<>? AND date(v.created_at)<date('now','localtime') " +
+                        "AND v.fee>v.paid_amount ORDER BY v.created_at ASC", new String[]{CANCELLED});
+        while (c.moveToNext()) { Debt d=new Debt(); d.visitId=c.getLong(0); d.patientName=c.getString(1); d.cardNo=c.getInt(2);
+            d.createdAt=c.getString(3); d.fee=c.getInt(4); d.paid=c.getInt(5); out.add(d); }
+        c.close(); return out;
     }
 
     public Patient getPatient(long id) {
@@ -640,9 +730,16 @@ public class ClinicDb extends SQLiteOpenHelper {
         c.close();
         if (canFinanceRead()) {
             Cursor p = getReadableDatabase().rawQuery(
-                    "SELECT COALESCE(SUM(amount),0) FROM payments WHERE date(created_at)=date('now','localtime')", null);
-            if (p.moveToFirst()) s.totalPaid = p.getInt(0);
+                    "SELECT COALESCE(SUM(amount),0),COALESCE(SUM(CASE WHEN amount<0 THEN -amount ELSE 0 END),0)," +
+                            "COALESCE(SUM(CASE WHEN method='كاش' THEN amount ELSE 0 END),0)," +
+                            "COALESCE(SUM(CASE WHEN method='تحويل بنكي' THEN amount ELSE 0 END),0)," +
+                            "COALESCE(SUM(CASE WHEN method='محفظة' THEN amount ELSE 0 END),0)," +
+                            "COALESCE(SUM(CASE WHEN method NOT IN ('كاش','تحويل بنكي','محفظة') THEN amount ELSE 0 END),0) " +
+                            "FROM payments WHERE date(created_at)=date('now','localtime')", null);
+            if (p.moveToFirst()) { s.totalPaid=p.getInt(0); s.refunded=p.getInt(1); s.cash=p.getInt(2); s.bank=p.getInt(3); s.wallet=p.getInt(4); s.other=p.getInt(5); }
             p.close();
+            Cursor cancelled = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM visits WHERE status=? AND date(created_at)=date('now','localtime')", new String[]{CANCELLED});
+            if (cancelled.moveToFirst()) s.cancelledVisits=cancelled.getInt(0); cancelled.close();
         }
         if (canQueueRead()) s.openQueue = openQueueCountInternal();
         return s;
@@ -663,9 +760,24 @@ public class ClinicDb extends SQLiteOpenHelper {
         v.put("total_waived", s.waivedVisits);
         v.put("outstanding", s.outstanding);
         v.put("closed_at", now());
-        long id = db.insert("day_closures", null, v);
+        v.put("is_reopened", 0);
+        long id;
+        Cursor existing = db.rawQuery("SELECT id FROM day_closures WHERE day=?", new String[]{today()});
+        if (existing.moveToFirst()) { id=existing.getLong(0); db.update("day_closures",v,"id=?",new String[]{String.valueOf(id)}); }
+        else id = db.insert("day_closures", null, v);
+        existing.close();
         if (id > 0) audit(db, "CLOSE_DAY", "day_closure", id, today());
         return id > 0;
+    }
+
+    public boolean reopenToday(String reason) {
+        String clean=safe(reason).trim();
+        if (!"owner_doctor".equals(auth.memberRole()) || clean.length()<3 || !isTodayClosedInternal()) return false;
+        ContentValues v=new ContentValues(); v.put("is_reopened",1); v.put("last_reopened_at",now());
+        v.put("last_reopened_by_user_id",auth.userId()); v.put("last_reopened_by_name",auth.memberDisplayName()); v.put("last_reopen_reason",clean);
+        SQLiteDatabase db=getWritableDatabase(); int changed=db.update("day_closures",v,"day=? AND is_reopened=0",new String[]{today()});
+        if (changed>0) { db.execSQL("UPDATE day_closures SET reopen_count=reopen_count+1 WHERE day=?",new Object[]{today()}); audit(db,"REOPEN_DAY","day_closure",closureId(db,today()),clean); }
+        return changed>0;
     }
 
     public boolean isTodayClosed() {
@@ -676,6 +788,20 @@ public class ClinicDb extends SQLiteOpenHelper {
     public boolean isOperationalDayClosed() {
         return isTodayClosedInternal();
     }
+
+    public void markFinanceSettingsDirty() {
+        putMeta(getWritableDatabase(), "finance_settings_dirty", "1");
+    }
+
+    public int syncCount(String kind) {
+        String sql;
+        if("failed".equals(kind)) sql="SELECT COUNT(*) FROM sync_dirty WHERE sync_status='failed'";
+        else if("conflict".equals(kind)) sql="SELECT COUNT(*) FROM sync_conflicts WHERE resolved=0";
+        else sql="SELECT COUNT(*) FROM sync_dirty";
+        Cursor c=getReadableDatabase().rawQuery(sql,null); int value=c.moveToFirst()?c.getInt(0):0; c.close(); return value;
+    }
+
+    public String syncMeta(String key) { return metaValue(getReadableDatabase(),key); }
 
     public int daysSinceLastVisit(long patientId) {
         if (!(can("view_patients") || can("register_visits"))) return 9999;
@@ -705,11 +831,15 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private boolean isTodayClosedInternal() {
-        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM day_closures WHERE day=?", new String[]{today()});
+        Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(*) FROM day_closures WHERE day=? AND is_reopened=0", new String[]{today()});
         boolean closed = c.moveToFirst() && c.getInt(0) > 0;
         c.close();
         return closed;
     }
+
+    private long closureId(SQLiteDatabase db,String day) { Cursor c=db.rawQuery("SELECT id FROM day_closures WHERE day=?",new String[]{day}); long id=c.moveToFirst()?c.getLong(0):-1; c.close(); return id; }
+    private void recomputePaidAmount(SQLiteDatabase db,long visitId) { Cursor c=db.rawQuery("SELECT COALESCE(SUM(amount),0) FROM payments WHERE visit_id=?",new String[]{String.valueOf(visitId)}); int paid=c.moveToFirst()?Math.max(0,c.getInt(0)):0; c.close(); ContentValues v=new ContentValues(); v.put("paid_amount",paid); db.update("visits",v,"id=?",new String[]{String.valueOf(visitId)}); }
+    private void putActor(ContentValues v) { v.put("actor_user_id",auth.userId()); v.put("actor_display_name",auth.memberDisplayName()); v.put("actor_role",auth.memberRole()); }
 
     private int nextCardNo(SQLiteDatabase db) {
             long next = metaLong(db, "card_range_next", 0);
@@ -874,6 +1004,8 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public static class Stats {
-        public int totalVisits, totalCharges, totalPaid, waivedVisits, outstanding, openQueue;
+        public int totalVisits, totalCharges, totalPaid, waivedVisits, outstanding, openQueue, refunded, cancelledVisits, cash, bank, wallet, other;
     }
+    public static class Payment { public long id,visitId; public int amount; public String method,eventType,reason,actorName,createdAt,patientName; public boolean reversed; }
+    public static class Debt { public long visitId; public int cardNo,fee,paid; public String patientName,createdAt; public int remaining(){return Math.max(0,fee-paid);} }
 }
