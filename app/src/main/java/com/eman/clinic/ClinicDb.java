@@ -17,7 +17,7 @@ import java.util.Locale;
 import java.util.Set;
 
 public class ClinicDb extends SQLiteOpenHelper {
-    private static final int DATABASE_VERSION = 4;
+    private static final int DATABASE_VERSION = 5;
     private static final String LEGACY_DATABASE = "clinic_offline.db";
     public static final String NEW = "NEW";
     public static final String FREE_FOLLOWUP = "FREE_FOLLOWUP";
@@ -80,6 +80,11 @@ public class ClinicDb extends SQLiteOpenHelper {
             addColumnIfMissing(db, "patients", "current_medications", "TEXT NOT NULL DEFAULT ''");
         }
         if (oldVersion < 4) addPaymentForeignKeyWithoutDataLoss(db);
+        if (oldVersion < 5) {
+            addColumnIfMissing(db, "audit_log", "actor_user_id", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "audit_log", "actor_display_name", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(db, "audit_log", "actor_role", "TEXT NOT NULL DEFAULT ''");
+        }
         createSyncSchema(db);
     }
 
@@ -88,7 +93,7 @@ public class ClinicDb extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, patient_id INTEGER NOT NULL, visit_type TEXT NOT NULL, status TEXT NOT NULL, fee INTEGER NOT NULL DEFAULT 0, paid_amount INTEGER NOT NULL DEFAULT 0, complaint TEXT DEFAULT '', exam TEXT DEFAULT '', diagnosis TEXT DEFAULT '', labs TEXT DEFAULT '', treatment TEXT DEFAULT '', followup TEXT DEFAULT '', created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, FOREIGN KEY(patient_id) REFERENCES patients(id) ON DELETE RESTRICT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, visit_id INTEGER NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(visit_id) REFERENCES visits(id) ON DELETE RESTRICT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS day_closures (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT NOT NULL UNIQUE, total_visits INTEGER NOT NULL, total_charges INTEGER NOT NULL, total_paid INTEGER NOT NULL, total_waived INTEGER NOT NULL, outstanding INTEGER NOT NULL, closed_at TEXT NOT NULL)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT, created_at TEXT NOT NULL)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id INTEGER, details TEXT, actor_user_id TEXT NOT NULL DEFAULT '', actor_display_name TEXT NOT NULL DEFAULT '', actor_role TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_patient ON visits(patient_id)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_visits_status ON visits(status)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_payments_visit ON payments(visit_id)");
@@ -273,7 +278,7 @@ public class ClinicDb extends SQLiteOpenHelper {
 
     public boolean updatePatientMedical(long patientId, String ageText, String allergies,
                                         String chronicConditions, String currentMedications) {
-        if (!(can("edit_patients") || can("edit_clinical"))) return false;
+        if (!can("edit_clinical")) return false;
         if (!patientExists(patientId)) return false;
         ContentValues v = new ContentValues();
         v.put("age_text", safe(ageText).trim());
@@ -437,7 +442,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     public List<Visit> unpaidToday() {
-        if (!canFinanceRead()) return new ArrayList<>();
+        if (!(can("view_finance") || can("record_payments"))) return new ArrayList<>();
         return queryVisits("WHERE date(v.created_at)=date('now','localtime') AND v.fee>v.paid_amount ORDER BY v.id ASC", new String[]{});
     }
 
@@ -601,7 +606,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private boolean can(String permission) {
-        return !auth.hasRemoteIdentity() || auth.can(permission);
+        return auth.hasRemoteIdentity() && auth.can(permission);
     }
 
     private boolean canQueueRead() {
@@ -609,7 +614,7 @@ public class ClinicDb extends SQLiteOpenHelper {
     }
 
     private boolean canFinanceRead() {
-        return can("view_finance") || can("record_payments") || can("close_day");
+        return can("view_finance") || can("close_day");
     }
 
     private void audit(SQLiteDatabase db, String action, String entityType, long entityId, String details) {
@@ -618,6 +623,9 @@ public class ClinicDb extends SQLiteOpenHelper {
         a.put("entity_type", entityType);
         a.put("entity_id", entityId);
         a.put("details", safe(details));
+        a.put("actor_user_id", auth.userId());
+        a.put("actor_display_name", auth.memberDisplayName());
+        a.put("actor_role", auth.memberRole());
         a.put("created_at", now());
         db.insert("audit_log", null, a);
     }

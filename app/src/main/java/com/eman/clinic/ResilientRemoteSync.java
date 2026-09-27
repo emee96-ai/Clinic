@@ -147,13 +147,19 @@ public final class ResilientRemoteSync {
     }
 
     private boolean pushPatient(String clinicId, String deviceId, String changeId, JSONObject local) throws Exception {
-        if (!auth.can("edit_patients")) return false;
-        JSONObject body = new JSONObject(local.toString());
-        body.put("clinic_id", clinicId);
-        body.put("source_device_id", deviceId);
-        body.put("client_change_id", changeId);
-        return ok(request("POST", "/rest/v1/patients?on_conflict=clinic_id,sync_key", body.toString(),
-                "resolution=merge-duplicates,return=minimal"));
+        boolean identityAllowed = auth.can("edit_patients");
+        boolean clinicalAllowed = auth.can("edit_clinical");
+        if (!identityAllowed && !clinicalAllowed) return false;
+        if (identityAllowed) {
+            JSONObject body = new JSONObject(local.toString());
+            stripMedical(body);
+            body.put("clinic_id", clinicId);
+            body.put("source_device_id", deviceId);
+            body.put("client_change_id", changeId);
+            if (!ok(request("POST", "/rest/v1/patients?on_conflict=clinic_id,sync_key", body.toString(),
+                    "resolution=merge-duplicates,return=minimal"))) return false;
+        }
+        return !clinicalAllowed || api.updatePatientMedicalSummary(clinicId, local);
     }
 
     private boolean pushVisit(String clinicId, String deviceId, String changeId, JSONObject local) throws Exception {
@@ -227,7 +233,8 @@ public final class ResilientRemoteSync {
     private JSONObject fetchRemoteEntity(String type, String clinicId, String syncKey, JSONObject local) throws Exception {
         String path;
         if ("patient".equals(type)) {
-            path = "/rest/v1/patients?select=sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id"
+            String select = "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)";
+            path = "/rest/v1/patients?select=" + enc(select)
                     + "&clinic_id=eq." + enc(clinicId) + "&sync_key=eq." + enc(syncKey) + "&limit=1";
         } else if ("visit".equals(type)) {
             String select = "sync_key,visit_type,status,fee,paid_amount,created_at,started_at,completed_at,updated_at,client_change_id,source_device_id,patient:patients(sync_key),clinical:clinical_records(complaint,exam,diagnosis,labs,treatment,followup)";
@@ -245,13 +252,14 @@ public final class ResilientRemoteSync {
         JSONArray a = getArray(path);
         if (a.length() == 0) return null;
         JSONObject row = a.getJSONObject(0);
+        if ("patient".equals(type)) flattenMedical(row);
         if ("visit".equals(type)) flattenVisit(row);
         return row;
     }
 
     private void pullPatients(String clinicId) throws Exception {
         pullPaged("patient", "patients_cursor", clinicId,
-                "patients", "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id");
+                "patients", "sync_key,card_no,full_name,phone,gender,created_at,updated_at,client_change_id,source_device_id,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)");
     }
 
     private void pullVisits(String clinicId) throws Exception {
@@ -285,6 +293,7 @@ public final class ResilientRemoteSync {
             JSONArray rows = getArray(path);
             for (int i = 0; i < rows.length(); i++) {
                 JSONObject row = rows.getJSONObject(i);
+                if ("patient".equals(type)) flattenMedical(row);
                 if ("visit".equals(type)) flattenVisit(row);
                 String syncKey = row.optString("sync_key", "");
                 Long localId = store.localIdForKey(type, syncKey);
@@ -320,6 +329,29 @@ public final class ResilientRemoteSync {
             row.put("labs", ""); row.put("treatment", ""); row.put("followup", "");
         }
         row.remove("clinical");
+    }
+
+    private void flattenMedical(JSONObject row) throws Exception {
+        JSONObject medical = row.optJSONObject("medical");
+        if (medical == null) {
+            JSONArray values = row.optJSONArray("medical");
+            if (values != null && values.length() > 0) medical = values.optJSONObject(0);
+        }
+        if (medical != null && auth.can("view_clinical")) {
+            row.put("age_text", medical.optString("age_text", ""));
+            row.put("allergies", medical.optString("allergies", ""));
+            row.put("chronic_conditions", medical.optString("chronic_conditions", ""));
+            row.put("current_medications", medical.optString("current_medications", ""));
+        } else {
+            row.put("age_text", ""); row.put("allergies", "");
+            row.put("chronic_conditions", ""); row.put("current_medications", "");
+        }
+        row.remove("medical");
+    }
+
+    private static void stripMedical(JSONObject body) {
+        body.remove("age_text"); body.remove("allergies");
+        body.remove("chronic_conditions"); body.remove("current_medications");
     }
 
     private void applyRemote(String type, JSONObject row) {

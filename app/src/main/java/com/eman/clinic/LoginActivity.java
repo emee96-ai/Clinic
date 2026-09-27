@@ -315,6 +315,7 @@ public class LoginActivity extends Activity {
         if (m.contains("invite_invalid_or_expired") || m.contains("invalid_invite")) return "رمز الدعوة غير صحيح أو انتهت صلاحيته أو استُخدم بالكامل";
         if (m.contains("already registered") || m.contains("User already registered") || m.contains("duplicate")) return "الحساب موجود مسبقاً؛ استخدمي زر ربط الحساب الموجود";
         if (m.contains("account_not_linked")) return "الحساب صحيح لكنه غير مربوط بعيادة. اختاري «عيادة جديدة» أو «رمز دعوة» حسب حسابك.";
+        if (m.contains("account_already_linked")) return "الحساب مربوط بعيادة أخرى بالفعل؛ استخدمي حساباً مختلفاً أو راجعي مالك العيادة.";
         if (m.contains("clinic_create_failed")) return "تعذر إنشاء العيادة. تأكدي إن الحساب ما مربوط بعيادة أخرى.";
         if (m.contains("Network") || m.contains("Unable") || m.contains("timed out") || m.contains("HTTP 0") || m.contains("Failed to connect")) return "الشبكة غير متاحة حالياً. البيانات المحلية ما بتتأثر.";
         if (m == null || m.trim().isEmpty() || "null".equals(m)) return "تعذر إكمال العملية";

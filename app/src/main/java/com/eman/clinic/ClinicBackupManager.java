@@ -24,7 +24,7 @@ public final class ClinicBackupManager {
     private static final String[] VISIT_COLS = {"id","patient_id","visit_type","status","fee","paid_amount","complaint","exam","diagnosis","labs","treatment","followup","created_at","started_at","completed_at"};
     private static final String[] PAYMENT_COLS = {"id","visit_id","amount","method","created_at"};
     private static final String[] CLOSURE_COLS = {"id","day","total_visits","total_charges","total_paid","total_waived","outstanding","closed_at"};
-    private static final String[] AUDIT_COLS = {"id","action","entity_type","entity_id","details","created_at"};
+    private static final String[] AUDIT_COLS = {"id","action","entity_type","entity_id","details","actor_user_id","actor_display_name","actor_role","created_at"};
     private static final String[] KEY_COLS = {"entity_type","local_id","sync_key"};
     private static final String[] DIRTY_COLS = {"entity_type","local_id","changed_at"};
 
@@ -62,7 +62,7 @@ public final class ClinicBackupManager {
         data.put("visits", query(db, "SELECT id,patient_id,visit_type,status,fee,paid_amount,complaint,exam,diagnosis,labs,treatment,followup,created_at,started_at,completed_at FROM visits ORDER BY id", VISIT_COLS));
         data.put("payments", query(db, "SELECT id,visit_id,amount,method,created_at FROM payments ORDER BY id", PAYMENT_COLS));
         data.put("day_closures", query(db, "SELECT id,day,total_visits,total_charges,total_paid,total_waived,outstanding,closed_at FROM day_closures ORDER BY id", CLOSURE_COLS));
-        data.put("audit_log", query(db, "SELECT id,action,entity_type,entity_id,details,created_at FROM audit_log ORDER BY id", AUDIT_COLS));
+        data.put("audit_log", query(db, "SELECT id,action,entity_type,entity_id,details,actor_user_id,actor_display_name,actor_role,created_at FROM audit_log ORDER BY id", AUDIT_COLS));
         data.put("sync_entity_keys", query(db, "SELECT entity_type,local_id,sync_key FROM sync_entity_keys ORDER BY entity_type,local_id", KEY_COLS));
         data.put("sync_dirty", query(db, "SELECT entity_type,local_id,changed_at FROM sync_dirty ORDER BY changed_at", DIRTY_COLS));
         root.put("data", data);

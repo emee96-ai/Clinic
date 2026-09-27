@@ -50,7 +50,12 @@ public final class SupabaseApi {
             return true;
         }
         JSONObject user = json.optJSONObject("user");
-        if (user != null) auth.saveSession("", "", user.optString("id", ""));
+        if (user != null) {
+            // A confirmation-pending signup must not inherit tokens or membership from
+            // another account previously used on the same device.
+            auth.clearRemoteSession();
+            auth.saveSession("", "", user.optString("id", ""));
+        }
         return false;
     }
 
@@ -92,27 +97,18 @@ public final class SupabaseApi {
         if (clinicName.length() < 2 || auth.userId().isEmpty()) return false;
 
         JSONObject body = new JSONObject();
-        body.put("name", clinicName);
-        body.put("owner_user_id", auth.userId());
-        Response create = request("POST", "/rest/v1/clinics", body.toString(), "return=representation");
+        body.put("p_name", clinicName);
+        body.put("p_display_name", displayName == null ? "" : displayName.trim());
+        Response create = request("POST", "/rest/v1/rpc/create_doctor_clinic", body.toString(), null);
         if (!ok(create)) throw new IOException(errorMessage(create));
         JSONArray created = new JSONArray(create.body);
         if (created.length() == 0) return false;
         JSONObject clinic = created.getJSONObject(0);
-        String clinicId = clinic.getString("id");
-
-        JSONObject member = new JSONObject();
-        member.put("clinic_id", clinicId);
-        member.put("user_id", auth.userId());
-        member.put("role", "owner_doctor");
-        member.put("active", true);
-        member.put("display_name", displayName == null ? "" : displayName.trim());
-        member.put("permissions", ownerPermissions());
-        Response membership = request("POST", "/rest/v1/clinic_members?on_conflict=clinic_id,user_id",
-                member.toString(), "resolution=merge-duplicates,return=minimal");
-        if (!ok(membership)) throw new IOException(errorMessage(membership));
-        auth.saveClinic(clinicId, clinic.optString("name", clinicName));
-        auth.saveMembership("owner_doctor", ownerPermissions(), displayName);
+        String clinicId = clinic.getString("clinic_id");
+        JSONObject permissions = clinic.optJSONObject("permissions");
+        if (permissions == null) permissions = ownerPermissions();
+        auth.saveClinic(clinicId, clinic.optString("clinic_name", clinicName));
+        auth.saveMembership(clinic.optString("member_role", "owner_doctor"), permissions, displayName);
         auth.clearPendingClinicName();
         refreshEntitlementQuietly();
         return true;
@@ -188,16 +184,18 @@ public final class SupabaseApi {
     public boolean upsertPatient(String clinicId, String deviceId, JSONObject local) throws Exception {
         if (auth.can("edit_patients")) {
             JSONObject body = new JSONObject(local.toString());
+            stripMedical(body);
             body.put("clinic_id", clinicId);
             body.put("source_device_id", deviceId);
             Response r = request("POST", "/rest/v1/patients?on_conflict=clinic_id,sync_key", body.toString(), "resolution=merge-duplicates,return=minimal");
-            return ok(r);
+            if (!ok(r)) return false;
+            return !auth.can("edit_clinical") || updatePatientMedicalSummary(clinicId, local);
         }
         if (auth.can("edit_clinical")) return updatePatientMedicalSummary(clinicId, local);
         return false;
     }
 
-    private boolean updatePatientMedicalSummary(String clinicId, JSONObject local) throws Exception {
+    boolean updatePatientMedicalSummary(String clinicId, JSONObject local) throws Exception {
         JSONObject body = new JSONObject();
         body.put("p_clinic_id", clinicId);
         body.put("p_sync_key", local.optString("sync_key", ""));
@@ -279,9 +277,12 @@ public final class SupabaseApi {
 
     public JSONArray pullPatients(String clinicId, String cursor) throws Exception {
         if (!auth.can("view_patients")) return new JSONArray();
-        String path = "/rest/v1/patients?select=sync_key,card_no,full_name,phone,gender,age_text,allergies,chronic_conditions,current_medications,created_at,updated_at&clinic_id=eq." + enc(clinicId)
+        String select = "sync_key,card_no,full_name,phone,gender,created_at,updated_at,medical:patient_medical_profiles(age_text,allergies,chronic_conditions,current_medications)";
+        String path = "/rest/v1/patients?select=" + enc(select) + "&clinic_id=eq." + enc(clinicId)
                 + cursorFilter(cursor) + "&order=updated_at.asc&limit=1000";
-        return getArray(path);
+        JSONArray rows = getArray(path);
+        for (int i = 0; i < rows.length(); i++) flattenMedical(rows.getJSONObject(i));
+        return rows;
     }
 
     public JSONArray pullVisits(String clinicId, String cursor) throws Exception {
@@ -333,6 +334,31 @@ public final class SupabaseApi {
         Response r = request("GET", path, null, null);
         if (!ok(r)) throw new IOException(errorMessage(r));
         return new JSONArray(r.body);
+    }
+
+    private static void stripMedical(JSONObject body) {
+        body.remove("age_text");
+        body.remove("allergies");
+        body.remove("chronic_conditions");
+        body.remove("current_medications");
+    }
+
+    private void flattenMedical(JSONObject row) throws Exception {
+        JSONObject medical = row.optJSONObject("medical");
+        if (medical == null) {
+            JSONArray values = row.optJSONArray("medical");
+            if (values != null && values.length() > 0) medical = values.optJSONObject(0);
+        }
+        if (medical != null && auth.can("view_clinical")) {
+            row.put("age_text", medical.optString("age_text", ""));
+            row.put("allergies", medical.optString("allergies", ""));
+            row.put("chronic_conditions", medical.optString("chronic_conditions", ""));
+            row.put("current_medications", medical.optString("current_medications", ""));
+        } else {
+            row.put("age_text", ""); row.put("allergies", "");
+            row.put("chronic_conditions", ""); row.put("current_medications", "");
+        }
+        row.remove("medical");
     }
 
     private static String cursorFilter(String cursor) {

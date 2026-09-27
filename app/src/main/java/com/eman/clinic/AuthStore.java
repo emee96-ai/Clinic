@@ -10,6 +10,7 @@ import org.json.JSONObject;
 /** Stores the Clinic session, selected clinic, member access and cached subscription state. */
 public final class AuthStore {
     private static final String PREF = "clinic_remote_auth";
+    private static final long STAFF_AUTHORIZATION_TTL_MS = 24L * 60L * 60L * 1000L;
     private final Context context;
     private final SharedPreferences prefs;
     private final SecureStorage secure;
@@ -18,7 +19,7 @@ public final class AuthStore {
         this.context = context.getApplicationContext();
         prefs = this.context.getSharedPreferences(PREF, Context.MODE_PRIVATE);
         secure = new SecureStorage(this.context, PREF);
-        if ("owner_doctor".equals(prefs.getString("member_role", ""))) {
+        if ("owner_doctor".equals(secure.getString("member_role", ""))) {
             this.context.getSharedPreferences("clinic_settings", Context.MODE_PRIVATE).edit()
                     .putString("role", "DOCTOR")
                     .putBoolean("role_chosen", true)
@@ -40,15 +41,13 @@ public final class AuthStore {
     }
 
     public void saveMembership(String role, JSONObject permissions, String displayName) {
+        if (!ClinicPermissionRules.isKnownRole(role)) throw new SecurityException("Unknown clinic role");
         JSONObject effective = permissions == null ? new JSONObject() : permissions;
-        String json = effective.toString();
-        prefs.edit()
-                .putString("member_role", safe(role))
-                .putString("member_permissions", json)
-                .putString("member_display_name", safe(displayName))
-                .putBoolean("member_active", true)
-                .putLong("membership_checked_local_ms", System.currentTimeMillis())
-                .apply();
+        secure.putString("member_role", safe(role));
+        secure.putString("member_permissions", effective.toString());
+        secure.putString("member_display_name", safe(displayName));
+        secure.putBoolean("member_active", true);
+        secure.putLong("membership_checked_local_ms", System.currentTimeMillis());
 
         String localRole = "RECEPTION";
         if ("substitute_doctor".equals(role) || "owner_doctor".equals(role)) localRole = "DOCTOR";
@@ -61,10 +60,8 @@ public final class AuthStore {
     }
 
     public void markMembershipInactive() {
-        prefs.edit()
-                .putBoolean("member_active", false)
-                .putLong("membership_checked_local_ms", System.currentTimeMillis())
-                .apply();
+        secure.putBoolean("member_active", false);
+        secure.putLong("membership_checked_local_ms", System.currentTimeMillis());
         updateTeamLauncher(false);
         purgeClinicalCache();
     }
@@ -84,11 +81,16 @@ public final class AuthStore {
         try {
             SyncStore store = new SyncStore(context);
             store.putMeta("suppress_tracking", "1");
+            ClinicDb db = new ClinicDb(context);
             try {
-                new ClinicDb(context).getWritableDatabase().execSQL(
+                db.getWritableDatabase().execSQL(
                         "UPDATE visits SET complaint='',exam='',diagnosis='',labs='',treatment='',followup=''"
                 );
+                db.getWritableDatabase().execSQL(
+                        "UPDATE patients SET age_text='',allergies='',chronic_conditions='',current_medications=''"
+                );
             } finally {
+                db.close();
                 store.putMeta("suppress_tracking", "0");
             }
         } catch (Exception ignored) {}
@@ -114,9 +116,9 @@ public final class AuthStore {
     public String userId() { return secure.getString("user_id", ""); }
     public String clinicId() { return secure.getString("clinic_id", ""); }
     public String clinicName() { return prefs.getString("clinic_name", ""); }
-    public String memberRole() { return prefs.getString("member_role", ""); }
-    public String memberDisplayName() { return prefs.getString("member_display_name", ""); }
-    public boolean isMembershipActive() { return prefs.getBoolean("member_active", !hasRemoteIdentity()); }
+    public String memberRole() { return secure.getString("member_role", ""); }
+    public String memberDisplayName() { return secure.getString("member_display_name", ""); }
+    public boolean isMembershipActive() { return secure.getBoolean("member_active", false); }
     public String subscriptionPlan() { return prefs.getString("subscription_plan", "trial"); }
     public String subscriptionStatus() { return prefs.getString("subscription_status", ""); }
     public String subscriptionReason() { return prefs.getString("subscription_reason", ""); }
@@ -124,13 +126,17 @@ public final class AuthStore {
     public String paidUntil() { return prefs.getString("paid_until", ""); }
 
     public JSONObject permissions() {
-        try { return new JSONObject(prefs.getString("member_permissions", "{}")); }
+        try { return new JSONObject(secure.getString("member_permissions", "{}")); }
         catch (Exception e) { return new JSONObject(); }
     }
 
     public boolean can(String permission) {
-        if (hasRemoteIdentity() && !prefs.getBoolean("member_active", true)) return false;
-        if ("owner_doctor".equals(memberRole())) return true;
+        if (!hasRemoteIdentity() || !isMembershipActive()) return false;
+        String role = memberRole();
+        if (!ClinicPermissionRules.allows(role, permission)) return false;
+        if ("owner_doctor".equals(role)) return true;
+        long checked = secure.getLong("membership_checked_local_ms", 0L);
+        if (checked <= 0L || System.currentTimeMillis() - checked > STAFF_AUTHORIZATION_TTL_MS) return false;
         return permissions().optBoolean(permission, false);
     }
 

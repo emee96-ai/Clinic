@@ -31,7 +31,6 @@ public class MainActivity extends Activity {
     private static final int NAV_HOME = 0, NAV_QUEUE = 1, NAV_PATIENTS = 2, NAV_FINANCE = 3;
     private static final String ROLE_RECEPTION = "RECEPTION";
     private static final String ROLE_DOCTOR = "DOCTOR";
-    private static final String ROLE_ADMIN = "ADMIN";
 
     private final int primary = Color.rgb(14, 113, 105);
     private final int primaryDark = Color.rgb(8, 78, 73);
@@ -57,17 +56,21 @@ public class MainActivity extends Activity {
         Window window = getWindow();
         window.setStatusBarColor(surface);
         window.setNavigationBarColor(surface);
-        db = new ClinicDb(this);
         auth = new AuthStore(this);
+        if (!auth.hasRemoteIdentity() || !auth.isMembershipActive()) {
+            startActivity(new Intent(this, LoginActivity.class));
+            finish();
+            return;
+        }
+        db = new ClinicDb(this);
         prefs = getSharedPreferences("clinic_settings", MODE_PRIVATE);
-        role = prefs.getString("role", ROLE_RECEPTION);
+        role = uiRole(auth.memberRole());
         showHome();
-        if (!prefs.contains("role_chosen") && !auth.hasRemoteIdentity()) selectRoleDialog(true);
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (prefs != null) role = prefs.getString("role", role == null ? ROLE_RECEPTION : role);
+        if (auth != null) role = uiRole(auth.memberRole());
     }
 
     @Override protected void onPause() {
@@ -91,10 +94,7 @@ public class MainActivity extends Activity {
         TextView brand = tv(prefs.getString("clinic_name", "العيادة"), 21, ink, true);
         top.addView(brand, new LinearLayout.LayoutParams(0, dp(42), 1));
         TextView roleChip = chip(roleLabel(role), primary, Color.WHITE);
-        roleChip.setOnClickListener(v -> {
-            if (auth.hasRemoteIdentity()) toast("الدور مربوط بحسابك وصلاحيات الدكتور");
-            else selectRoleDialog(false);
-        });
+        roleChip.setOnClickListener(v -> toast("الدور مربوط بحسابك وصلاحيات الدكتور"));
         top.addView(roleChip);
         header.addView(top);
         header.addView(tv(title, 26, ink, true));
@@ -124,7 +124,7 @@ public class MainActivity extends Activity {
         bar.addView(navItem("الطابور", selected == NAV_QUEUE, v -> showQueue()), navParams());
         bar.addView(navItem("المرضى", selected == NAV_PATIENTS, v -> showPatients("")), navParams());
         if (ROLE_DOCTOR.equals(role) && !isOwnerDoctor()) bar.addView(navItem("الطبيب", false, v -> showDoctor()), navParams());
-        else bar.addView(navItem("الحسابات", selected == NAV_FINANCE, v -> showFinance()), navParams());
+        else bar.addView(navItem(auth.can("view_finance") ? "الحسابات" : "التحصيل", selected == NAV_FINANCE, v -> showFinance()), navParams());
         return bar;
     }
 
@@ -146,8 +146,10 @@ public class MainActivity extends Activity {
         ClinicDb.Stats s = db.todayStats();
         content.addView(statRow("زيارات اليوم", String.valueOf(s.totalVisits), "في الطابور", String.valueOf(s.openQueue)));
         content.addView(space(10));
-        content.addView(statRow("المحصّل اليوم", money(s.totalPaid), "متبقي زيارات اليوم", money(s.outstanding)));
-        content.addView(space(12));
+        if (auth.can("view_finance") || auth.can("close_day")) {
+            content.addView(statRow("المحصّل اليوم", money(s.totalPaid), "متبقي زيارات اليوم", money(s.outstanding)));
+            content.addView(space(12));
+        }
 
         if (auth.hasRemoteIdentity()) {
             LinearLayout sync = card();
@@ -171,6 +173,10 @@ public class MainActivity extends Activity {
             content.addView(primaryButton("تسجيل مريض جديد", v -> newPatientDialog()));
             content.addView(space(8));
             content.addView(secondaryButton("مريض مسجل / مقابلة / نتيجة فحوصات", v -> lookupPatientDialog()));
+            if (auth.can("record_payments")) {
+                content.addView(space(8));
+                content.addView(secondaryButton("تحصيل المبالغ المعلّقة", v -> showFinance()));
+            }
         } else if (ROLE_DOCTOR.equals(role)) {
             section("شغل الطبيب", "الحالات المرسلة من المسجلة تظهر هنا");
             content.addView(primaryButton("فتح طابور الطبيب", v -> showDoctor()));
@@ -237,12 +243,12 @@ public class MainActivity extends Activity {
                     if (db.sendToDoctor(visit.id)) { toast("تم الإرسال للطبيب"); showQueue(); }
                     else { toast("تعذر الإرسال؛ حالة الزيارة تغيرت"); showQueue(); }
                 }));
-            } else if (ClinicDb.WAITING.equals(visit.status) && (ROLE_DOCTOR.equals(role) || ROLE_ADMIN.equals(role))) {
+            } else if (ClinicDb.WAITING.equals(visit.status) && ROLE_DOCTOR.equals(role)) {
                 card.addView(primaryButton("بدء الكشف", v -> {
                     if (db.startVisit(visit.id)) showDoctorVisit(visit.id);
                     else { toast("تعذر بدء الكشف؛ حدّثي الطابور"); showDoctor(); }
                 }));
-            } else if (ClinicDb.IN_CONSULT.equals(visit.status) && (ROLE_DOCTOR.equals(role) || ROLE_ADMIN.equals(role))) {
+            } else if (ClinicDb.IN_CONSULT.equals(visit.status) && ROLE_DOCTOR.equals(role)) {
                 card.addView(primaryButton("متابعة الكشف", v -> showDoctorVisit(visit.id)));
             }
         }
@@ -271,7 +277,7 @@ public class MainActivity extends Activity {
         identity.addView(tv("الزيارة: " + typeLabel(visit.type), 14, primary, true));
         content.addView(identity);
 
-        if (patient != null) {
+        if (patient != null && auth.can("view_clinical")) {
             LinearLayout medical = card();
             medical.addView(tv("معلومات طبية مهمة", 16, ink, true));
             boolean any = false;
@@ -414,7 +420,7 @@ public class MainActivity extends Activity {
             LinearLayout c = card();
             c.addView(tv(p.name, 18, ink, true));
             String sub = "كرت #" + p.cardNo;
-            if (!safe(p.ageText).isEmpty()) sub += "  •  " + p.ageText;
+            if (auth.can("view_clinical") && !safe(p.ageText).isEmpty()) sub += "  •  " + p.ageText;
             if (!safe(p.phone).isEmpty()) sub += "  •  " + p.phone;
             c.addView(tv(sub, 13, muted, false));
             c.setOnClickListener(v -> showPatientDetail(p.id));
@@ -425,26 +431,29 @@ public class MainActivity extends Activity {
     private void showPatientDetail(long patientId) {
         ClinicDb.Patient p = db.getPatient(patientId);
         if (p == null) { showPatients(""); return; }
-        base("ملف المريض", "السجل الطبي والزيارات السابقة", NAV_PATIENTS);
+        base("ملف المريض", auth.can("view_clinical") ? "السجل الطبي والزيارات السابقة" : "بيانات المريض والزيارات", NAV_PATIENTS);
         LinearLayout profile = card();
         profile.addView(tv(p.name, 23, ink, true));
         profile.addView(tv("رقم الكرت: #" + p.cardNo, 15, primary, true));
-        profile.addView(tv("العمر: " + (safe(p.ageText).isEmpty() ? "غير مسجل" : p.ageText), 14, muted, false));
+        if (auth.can("view_clinical"))
+            profile.addView(tv("العمر: " + (safe(p.ageText).isEmpty() ? "غير مسجل" : p.ageText), 14, muted, false));
         profile.addView(tv("الهاتف: " + (safe(p.phone).isEmpty() ? "غير مسجل" : p.phone), 14, muted, false));
         profile.addView(tv("النوع: " + (safe(p.gender).isEmpty() ? "غير محدد" : p.gender), 14, muted, false));
         content.addView(profile);
 
-        LinearLayout medical = card();
-        medical.addView(tv("المعلومات الطبية الأساسية", 16, ink, true));
-        medical.addView(tv("الحساسية: " + (safe(p.allergies).isEmpty() ? "غير مسجلة" : p.allergies), 14, safe(p.allergies).isEmpty() ? muted : warning, !safe(p.allergies).isEmpty()));
-        medical.addView(tv("الأمراض المزمنة: " + (safe(p.chronicConditions).isEmpty() ? "غير مسجلة" : p.chronicConditions), 14, muted, false));
-        medical.addView(tv("الأدوية الحالية: " + (safe(p.currentMedications).isEmpty() ? "غير مسجلة" : p.currentMedications), 14, muted, false));
-        if (canEditMedicalProfile()) {
-            TextView editMedical = link("تحديث المعلومات الطبية ←");
-            editMedical.setOnClickListener(v -> patientMedicalDialog(p, () -> showPatientDetail(patientId)));
-            medical.addView(editMedical);
+        if (auth.can("view_clinical")) {
+            LinearLayout medical = card();
+            medical.addView(tv("المعلومات الطبية الأساسية", 16, ink, true));
+            medical.addView(tv("الحساسية: " + (safe(p.allergies).isEmpty() ? "غير مسجلة" : p.allergies), 14, safe(p.allergies).isEmpty() ? muted : warning, !safe(p.allergies).isEmpty()));
+            medical.addView(tv("الأمراض المزمنة: " + (safe(p.chronicConditions).isEmpty() ? "غير مسجلة" : p.chronicConditions), 14, muted, false));
+            medical.addView(tv("الأدوية الحالية: " + (safe(p.currentMedications).isEmpty() ? "غير مسجلة" : p.currentMedications), 14, muted, false));
+            if (canEditMedicalProfile()) {
+                TextView editMedical = link("تحديث المعلومات الطبية ←");
+                editMedical.setOnClickListener(v -> patientMedicalDialog(p, () -> showPatientDetail(patientId)));
+                medical.addView(editMedical);
+            }
+            content.addView(medical);
         }
-        content.addView(medical);
 
         if (!ROLE_DOCTOR.equals(role) && !db.isOperationalDayClosed()) {
             content.addView(primaryButton("إضافة زيارة جديدة", v -> existingVisitDialog(p, false)));
@@ -468,14 +477,22 @@ public class MainActivity extends Activity {
     }
 
     private void showFinance() {
-        if (ROLE_DOCTOR.equals(role) && !isOwnerDoctor()) { showHome(); return; }
-        base("حسابات اليوم", "التحصيل والمدفوعات وإغلاق اليوم", NAV_FINANCE);
+        boolean canViewFinance = auth.can("view_finance") || auth.can("close_day");
+        boolean canCollect = auth.can("record_payments");
+        if (!canViewFinance && !canCollect) { showHome(); return; }
+        base(canViewFinance ? "حسابات اليوم" : "التحصيل",
+                canViewFinance ? "التحصيل والمدفوعات وإغلاق اليوم" : "تسجيل الدفعات للزيارات المعلّقة",
+                NAV_FINANCE);
         ClinicDb.Stats s = db.todayStats();
-        content.addView(statRow("رسوم زيارات اليوم", money(s.totalCharges), "المقبوض اليوم", money(s.totalPaid)));
-        content.addView(space(10));
-        content.addView(statRow("متبقي زيارات اليوم", money(s.outstanding), "المعفاة", String.valueOf(s.waivedVisits)));
-        content.addView(space(16));
-        section("مبالغ غير مكتملة", "يمكن تسجيل دفع كامل أو جزئي قبل إغلاق اليوم");
+        if (canViewFinance) {
+            content.addView(statRow("رسوم زيارات اليوم", money(s.totalCharges), "المقبوض اليوم", money(s.totalPaid)));
+            content.addView(space(10));
+            content.addView(statRow("متبقي زيارات اليوم", money(s.outstanding), "المعفاة", String.valueOf(s.waivedVisits)));
+            content.addView(space(16));
+        }
+        section("مبالغ غير مكتملة", canViewFinance
+                ? "يمكن تسجيل دفع كامل أو جزئي قبل إغلاق اليوم"
+                : "يمكنك تسجيل الدفع فقط؛ ملخص اليوم متاح للإدارة");
         List<ClinicDb.Visit> unpaid = db.unpaidToday();
         if (unpaid.isEmpty()) empty("ما في مبالغ معلّقة لليوم");
         for (ClinicDb.Visit visit : unpaid) {
@@ -483,12 +500,13 @@ public class MainActivity extends Activity {
             c.addView(tv(visit.patientName + "  •  #" + visit.cardNo, 17, ink, true));
             c.addView(tv(typeLabel(visit.type), 13, muted, false));
             c.addView(tv("المتبقي: " + money(visit.remaining()), 15, warning, true));
-            if (!db.isOperationalDayClosed()) {
+            if (canCollect && !db.isOperationalDayClosed()) {
                 c.addView(space(6));
                 c.addView(primaryButton("تسجيل دفعة", v -> paymentDialog(visit)));
             }
             content.addView(c);
         }
+        if (!auth.can("close_day")) return;
         content.addView(space(16));
         boolean closed = db.isTodayClosed();
         if (!closed && s.openQueue > 0) {
@@ -513,36 +531,34 @@ public class MainActivity extends Activity {
     }
 
     private void showSettings() {
-        base("إعدادات وأدوات العيادة", "الإعدادات، الفريق، المزامنة والنسخ الاحتياطي", -1);
-        EditText clinic = field("اسم العيادة", false); clinic.setText(prefs.getString("clinic_name", "العيادة"));
-        EditText fee = field("رسوم الكشف", false); fee.setInputType(InputType.TYPE_CLASS_NUMBER); fee.setText(String.valueOf(prefs.getInt("visit_fee", 10000)));
-        EditText resultFee = field("رسوم نتيجة الفحوصات", false); resultFee.setInputType(InputType.TYPE_CLASS_NUMBER); resultFee.setText(String.valueOf(prefs.getInt("result_fee", 0)));
-        EditText days = field("مدة المقابلة المجانية بالأيام", false); days.setInputType(InputType.TYPE_CLASS_NUMBER); days.setText(String.valueOf(prefs.getInt("followup_days", 7)));
-        content.addView(labeled("اسم العيادة", clinic));
-        content.addView(labeled("رسوم الكشف / المقابلة البعيدة", fee));
-        content.addView(labeled("رسوم إحضار نتيجة فحوصات", resultFee));
-        content.addView(labeled("المقابلة المجانية", days));
-        content.addView(primaryButton("حفظ الإعدادات", v -> {
-            String clinicValue = str(clinic).trim();
-            int feeValue = intValue(fee, 10000);
-            int resultValue = intValue(resultFee, 0);
-            int followValue = intValue(days, 7);
-            if (clinicValue.length() < 2) { clinic.setError("اكتبي اسم العيادة"); return; }
-            if (feeValue < 0) { fee.setError("الرسوم ما ممكن تكون سالبة"); return; }
-            if (resultValue < 0) { resultFee.setError("الرسوم ما ممكن تكون سالبة"); return; }
-            if (followValue < 1 || followValue > 90) { days.setError("من يوم إلى 90 يوم"); return; }
-            prefs.edit().putString("clinic_name", clinicValue)
-                    .putInt("visit_fee", feeValue)
-                    .putInt("result_fee", resultValue)
-                    .putInt("followup_days", followValue).apply();
-            toast("تم حفظ الإعدادات"); showHome();
-        }));
-        content.addView(space(10));
-        if (auth.hasRemoteIdentity()) {
-            content.addView(secondaryButton("الدور مربوط بالحساب: " + roleLabel(role), v -> toast("تغيير الدور والصلاحيات يتم من حساب الدكتور")));
-        } else {
-            content.addView(secondaryButton("تغيير دور الجهاز: " + roleLabel(role), v -> selectRoleDialog(false)));
+        base("إعدادات وأدوات العيادة", "الحساب، المزامنة وأدوات الإدارة", -1);
+        if (isOwnerDoctor()) {
+            EditText clinic = field("اسم العيادة", false); clinic.setText(prefs.getString("clinic_name", "العيادة"));
+            EditText fee = field("رسوم الكشف", false); fee.setInputType(InputType.TYPE_CLASS_NUMBER); fee.setText(String.valueOf(prefs.getInt("visit_fee", 10000)));
+            EditText resultFee = field("رسوم نتيجة الفحوصات", false); resultFee.setInputType(InputType.TYPE_CLASS_NUMBER); resultFee.setText(String.valueOf(prefs.getInt("result_fee", 0)));
+            EditText days = field("مدة المقابلة المجانية بالأيام", false); days.setInputType(InputType.TYPE_CLASS_NUMBER); days.setText(String.valueOf(prefs.getInt("followup_days", 7)));
+            content.addView(labeled("اسم العيادة", clinic));
+            content.addView(labeled("رسوم الكشف / المقابلة البعيدة", fee));
+            content.addView(labeled("رسوم إحضار نتيجة فحوصات", resultFee));
+            content.addView(labeled("المقابلة المجانية", days));
+            content.addView(primaryButton("حفظ الإعدادات", v -> {
+                String clinicValue = str(clinic).trim();
+                int feeValue = intValue(fee, 10000);
+                int resultValue = intValue(resultFee, 0);
+                int followValue = intValue(days, 7);
+                if (clinicValue.length() < 2) { clinic.setError("اكتبي اسم العيادة"); return; }
+                if (feeValue < 0) { fee.setError("الرسوم ما ممكن تكون سالبة"); return; }
+                if (resultValue < 0) { resultFee.setError("الرسوم ما ممكن تكون سالبة"); return; }
+                if (followValue < 1 || followValue > 90) { days.setError("من يوم إلى 90 يوم"); return; }
+                prefs.edit().putString("clinic_name", clinicValue)
+                        .putInt("visit_fee", feeValue)
+                        .putInt("result_fee", resultValue)
+                        .putInt("followup_days", followValue).apply();
+                toast("تم حفظ الإعدادات"); showHome();
+            }));
+            content.addView(space(10));
         }
+        content.addView(secondaryButton("الدور مربوط بالحساب: " + roleLabel(role), v -> toast("تغيير الدور والصلاحيات يتم من حساب الدكتور")));
 
         content.addView(space(20));
         section("أدوات العيادة", "كل أدوات الإدارة من مكان واحد");
@@ -561,6 +577,17 @@ public class MainActivity extends Activity {
                 toast("بدأت المزامنة");
             }));
         }
+
+        content.addView(space(10));
+        content.addView(secondaryButton("تسجيل الخروج من الحساب", v -> new AlertDialog.Builder(this)
+                .setTitle("تسجيل الخروج؟")
+                .setMessage("ستظل بيانات العيادة مشفّرة على هذا الجهاز، ولن تظهر إلا بعد الدخول لنفس العيادة.")
+                .setNegativeButton("رجوع", null)
+                .setPositiveButton("خروج", (d, w) -> {
+                    auth.clearRemoteSession();
+                    startActivity(new Intent(this, LoginActivity.class));
+                    finish();
+                }).show()));
 
         content.addView(space(20));
         LinearLayout info = card();
@@ -588,7 +615,9 @@ public class MainActivity extends Activity {
         EditText phone = field("رقم الهاتف", false); phone.setInputType(InputType.TYPE_CLASS_PHONE);
         EditText age = field("العمر — مثال: 32 سنة / 8 شهور", false);
         Spinner gender = spinner(new String[]{"غير محدد", "أنثى", "ذكر"});
-        box.addView(name); box.addView(space(8)); box.addView(phone); box.addView(space(8)); box.addView(age); box.addView(space(8)); box.addView(gender);
+        box.addView(name); box.addView(space(8)); box.addView(phone); box.addView(space(8));
+        if (auth.can("edit_clinical")) { box.addView(age); box.addView(space(8)); }
+        box.addView(gender);
         new AlertDialog.Builder(this)
                 .setTitle("تسجيل مريض جديد")
                 .setView(box)
@@ -596,7 +625,8 @@ public class MainActivity extends Activity {
                 .setPositiveButton("تسجيل", (d, w) -> {
                     String n = str(name).trim();
                     if (n.length() < 2) { toast("اكتبي اسم المريض"); return; }
-                    long patientId = db.createPatient(n, str(phone), String.valueOf(gender.getSelectedItem()), str(age), "", "", "");
+                    long patientId = db.createPatient(n, str(phone), String.valueOf(gender.getSelectedItem()),
+                            auth.can("edit_clinical") ? str(age) : "", "", "", "");
                     if (patientId <= 0) { toast("ما عندك صلاحية تسجيل مريض أو البيانات غير صحيحة"); return; }
                     long visitId = db.createVisit(patientId, ClinicDb.NEW, visitFee());
                     ClinicDb.Patient p = db.getPatient(patientId);
@@ -695,21 +725,6 @@ public class MainActivity extends Activity {
                     if (db.recordPayment(visit.id, a, String.valueOf(method.getSelectedItem()))) { toast("تم تسجيل الدفعة"); showFinance(); }
                     else toast("المبلغ غير صحيح أو اليوم مقفول");
                 }).show();
-    }
-
-    private void selectRoleDialog(boolean firstTime) {
-        if (auth != null && auth.hasRemoteIdentity()) { toast("الدور مربوط بحسابك وصلاحيات الدكتور"); return; }
-        String[] labels = {"المسجلة / الاستقبال", "الطبيب", "الإدارة"};
-        String[] values = {ROLE_RECEPTION, ROLE_DOCTOR, ROLE_ADMIN};
-        new AlertDialog.Builder(this)
-                .setTitle(firstTime ? "اختاري استخدام هذا الجهاز" : "تغيير دور الجهاز")
-                .setItems(labels, (d, which) -> {
-                    role = values[which];
-                    prefs.edit().putString("role", role).putBoolean("role_chosen", true).apply();
-                    showHome();
-                })
-                .setCancelable(!firstTime)
-                .show();
     }
 
     private LinearLayout statRow(String l1, String v1, String l2, String v2) {
@@ -865,7 +880,12 @@ public class MainActivity extends Activity {
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
     private boolean isOwnerDoctor() { return auth != null && "owner_doctor".equals(auth.memberRole()); }
     private boolean canEditMedicalProfile() {
-        return auth == null || !auth.hasRemoteIdentity() || auth.can("edit_patients") || auth.can("edit_clinical");
+        return auth != null && auth.can("edit_clinical");
+    }
+
+    private String uiRole(String memberRole) {
+        if ("owner_doctor".equals(memberRole) || "substitute_doctor".equals(memberRole)) return ROLE_DOCTOR;
+        return ROLE_RECEPTION;
     }
 
     private String waitingTime(String createdAt) {
@@ -887,7 +907,6 @@ public class MainActivity extends Activity {
     private String roleLabel(String value) {
         if (ROLE_DOCTOR.equals(value) && isOwnerDoctor()) return "الطبيب المالك";
         if (ROLE_DOCTOR.equals(value)) return "الطبيب";
-        if (ROLE_ADMIN.equals(value)) return "الإدارة";
         return "المسجلة";
     }
 

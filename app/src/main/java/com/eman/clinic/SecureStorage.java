@@ -29,8 +29,9 @@ final class SecureStorage {
     }
 
     synchronized String getString(String key, String fallback) {
-        String stored = preferences.getString(key, null);
-        if (stored == null) return fallback;
+        Object raw = preferences.getAll().get(key);
+        if (raw == null) return fallback;
+        String stored = String.valueOf(raw);
         if (!stored.startsWith(PREFIX)) {
             putString(key, stored);
             return stored;
@@ -71,6 +72,24 @@ final class SecureStorage {
 
     synchronized void clear() {
         preferences.edit().clear().apply();
+    }
+
+    synchronized boolean getBoolean(String key, boolean fallback) {
+        String value = getString(key, fallback ? "true" : "false");
+        return "true".equalsIgnoreCase(value);
+    }
+
+    synchronized void putBoolean(String key, boolean value) {
+        putString(key, value ? "true" : "false");
+    }
+
+    synchronized long getLong(String key, long fallback) {
+        try { return Long.parseLong(getString(key, String.valueOf(fallback))); }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    synchronized void putLong(String key, long value) {
+        putString(key, String.valueOf(value));
     }
 
     private SecretKey key() throws Exception {

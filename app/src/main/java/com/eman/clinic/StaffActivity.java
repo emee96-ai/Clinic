@@ -141,7 +141,7 @@ public class StaffActivity extends Activity {
         box.addView(ClinicUi.text(this,"راجعي الصلاحيات قبل إنشاء الرمز. يمكن تعديلها لاحقاً لكل عضو.",12,ClinicUi.MUTED,false));
         box.addView(ClinicUi.space(this,6));
         JSONObject defaults = defaultPermissions(role);
-        LinkedHashMap<String,CheckBox> checks = permissionChecks(defaults);
+        LinkedHashMap<String,CheckBox> checks = permissionChecks(defaults, role);
         for (CheckBox cb:checks.values()) box.addView(cb);
         EditText uses = ClinicUi.field(this,"عدد استخدامات الرمز"); uses.setInputType(InputType.TYPE_CLASS_NUMBER); uses.setText("1");
         EditText hours = ClinicUi.field(this,"صلاحية الرمز بالساعات"); hours.setInputType(InputType.TYPE_CLASS_NUMBER); hours.setText("72");
@@ -189,7 +189,8 @@ public class StaffActivity extends Activity {
         JSONObject current = member.optJSONObject("permissions"); if (current==null) current = new JSONObject();
         LinearLayout box = dialogBox();
         CheckBox active = new CheckBox(this); active.setText("الحساب نشط"); active.setTextColor(ClinicUi.INK); active.setChecked(member.optBoolean("active",true)); box.addView(active);
-        LinkedHashMap<String,CheckBox> checks = permissionChecks(current);
+        String role = member.optString("role", "");
+        LinkedHashMap<String,CheckBox> checks = permissionChecks(current, role);
         for (CheckBox cb:checks.values()) box.addView(cb);
         new AlertDialog.Builder(this).setTitle(member.optString("display_name",roleLabel(member.optString("role",""))))
                 .setView(box).setNegativeButton("إلغاء",null)
@@ -206,9 +207,10 @@ public class StaffActivity extends Activity {
         });
     }
 
-    private LinkedHashMap<String,CheckBox> permissionChecks(JSONObject values) {
+    private LinkedHashMap<String,CheckBox> permissionChecks(JSONObject values, String role) {
         LinkedHashMap<String,CheckBox> out = new LinkedHashMap<>();
         for (Map.Entry<String,String> e:PERMISSIONS.entrySet()) {
+            if (!ClinicPermissionRules.allows(role, e.getKey())) continue;
             CheckBox cb = new CheckBox(this); cb.setText(e.getValue()); cb.setTextColor(ClinicUi.INK); cb.setTextSize(14); cb.setChecked(values.optBoolean(e.getKey(),false));
             out.put(e.getKey(),cb);
         }
@@ -224,14 +226,7 @@ public class StaffActivity extends Activity {
     private JSONObject defaultPermissions(String role) {
         JSONObject p = new JSONObject();
         try {
-            if ("receptionist".equals(role)) {
-                p.put("view_patients",true); p.put("edit_patients",true); p.put("register_visits",true); p.put("manage_queue",true);
-                p.put("view_clinical",false); p.put("edit_clinical",false); p.put("view_finance",true); p.put("record_payments",true); p.put("close_day",true);
-            } else {
-                p.put("view_patients",true); p.put("edit_patients",false); p.put("register_visits",false); p.put("manage_queue",true);
-                p.put("view_clinical",true); p.put("edit_clinical",true); p.put("view_finance",false); p.put("record_payments",false); p.put("close_day",false);
-            }
-            p.put("manage_staff",false); p.put("manage_invites",false);
+            for (String permission : ClinicPermissionRules.allowedFor(role)) p.put(permission, true);
         } catch (Exception ignored) {}
         return p;
     }
