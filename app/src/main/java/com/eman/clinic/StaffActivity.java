@@ -143,16 +143,15 @@ public class StaffActivity extends Activity {
         JSONObject defaults = defaultPermissions(role);
         LinkedHashMap<String,CheckBox> checks = permissionChecks(defaults, role);
         for (CheckBox cb:checks.values()) box.addView(cb);
-        EditText uses = ClinicUi.field(this,"عدد استخدامات الرمز"); uses.setInputType(InputType.TYPE_CLASS_NUMBER); uses.setText("1");
         EditText hours = ClinicUi.field(this,"صلاحية الرمز بالساعات"); hours.setInputType(InputType.TYPE_CLASS_NUMBER); hours.setText("72");
-        box.addView(ClinicUi.space(this,8)); box.addView(ClinicUi.labeled(this,"عدد الاستخدامات (1–20)",uses));
+        box.addView(ClinicUi.space(this,8));
+        box.addView(ClinicUi.text(this,"الرمز مخصص لشخص واحد ويُستخدم مرة واحدة عند ربط الحساب أول مرة فقط.",12,ClinicUi.MUTED,false));
         box.addView(ClinicUi.labeled(this,"الصلاحية بالساعات (1–168)",hours));
 
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("إنشاء رمز دعوة")
                 .setView(box).setNegativeButton("إلغاء",null).setPositiveButton("إنشاء",null).create();
         dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            int maxUses = intVal(uses,1), expiry = intVal(hours,72);
-            if (maxUses < 1 || maxUses > 20) { uses.setError("من 1 إلى 20"); return; }
+            int maxUses = 1, expiry = intVal(hours,72);
             if (expiry < 1 || expiry > 168) { hours.setError("من ساعة إلى 168 ساعة"); return; }
             JSONObject permissions = permissionsFrom(checks);
             dialog.dismiss();
@@ -174,7 +173,7 @@ public class StaffActivity extends Activity {
 
     private void showInviteCode(String code, String role, int maxUses) {
         showStatus("تم إنشاء رمز الدعوة ✓",true,false);
-        String message = "رمز الدعوة: "+code+"\nالدور: "+roleLabel(role)+"\nعدد الاستخدامات: "+maxUses+"\n\nالشخص يفتح تطبيق العيادة، يختار «رمز دعوة»، ويكتب الرمز عند الربط.";
+        String message = "رمز الدعوة: "+code+"\nالدور: "+roleLabel(role)+"\n\nيُستخدم الرمز مرة واحدة فقط عند ربط الحساب أول مرة. بعد الربط يكون الدخول بالبريد وكلمة المرور بدون رمز.";
         new AlertDialog.Builder(this).setTitle("رمز الدعوة")
                 .setMessage(message)
                 .setNegativeButton("إغلاق",null)
@@ -192,9 +191,39 @@ public class StaffActivity extends Activity {
         String role = member.optString("role", "");
         LinkedHashMap<String,CheckBox> checks = permissionChecks(current, role);
         for (CheckBox cb:checks.values()) box.addView(cb);
-        new AlertDialog.Builder(this).setTitle(member.optString("display_name",roleLabel(member.optString("role",""))))
+        box.addView(ClinicUi.space(this,8));
+        box.addView(ClinicUi.text(this,"إلغاء تحديد «الحساب نشط» يوقف العضو مؤقتاً ويمكن تفعيله لاحقاً.",12,ClinicUi.MUTED,false));
+        TextView remove = ClinicUi.softButton(this,"إزالة العضو نهائياً من العيادة");
+        remove.setTextColor(ClinicUi.ERROR);
+        box.addView(ClinicUi.space(this,8));
+        box.addView(remove);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle(member.optString("display_name",roleLabel(member.optString("role",""))))
                 .setView(box).setNegativeButton("إلغاء",null)
-                .setPositiveButton("حفظ",(d,w)-> saveMember(member.optString("id",""),active.isChecked(),permissionsFrom(checks))).show();
+                .setPositiveButton("حفظ",(d,w)-> saveMember(member.optString("id",""),active.isChecked(),permissionsFrom(checks))).create();
+        remove.setOnClickListener(v -> confirmRemoveMember(dialog, member));
+        dialog.show();
+    }
+
+    private void confirmRemoveMember(AlertDialog parent, JSONObject member) {
+        String name = member.optString("display_name", roleLabel(member.optString("role", "")));
+        new AlertDialog.Builder(this)
+                .setTitle("إزالة نهائية؟")
+                .setMessage("سيُفصل حساب «"+name+"» عن العيادة فوراً وتُلغى كل صلاحياته. لا يمكن التراجع إلا بدعوته من جديد برمز جديد.")
+                .setNegativeButton("إلغاء", null)
+                .setPositiveButton("إزالة نهائية", (d,w) -> {
+                    parent.dismiss();
+                    removeMember(member.optString("id", ""));
+                }).show();
+    }
+
+    private void removeMember(String id) {
+        showStatus("جاري إزالة العضو…",false,false);
+        executor.execute(() -> {
+            try {
+                new SupabaseApi(this).removeMember(id);
+                runOnUiThread(() -> { Toast.makeText(this,"تمت إزالة العضو نهائياً من العيادة",Toast.LENGTH_SHORT).show(); loadMembers(); });
+            } catch (Exception e) { runOnUiThread(() -> showStatus(friendly(e),false,true)); }
+        });
     }
 
     private void saveMember(String id, boolean active, JSONObject permissions) {

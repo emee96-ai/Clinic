@@ -172,6 +172,14 @@ public final class SupabaseApi {
         return result == null ? new JSONObject() : result;
     }
 
+    public boolean removeMember(String memberId) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("p_member_id", memberId);
+        Response r = request("POST", "/rest/v1/rpc/remove_clinic_member", body.toString(), null);
+        if (!ok(r)) throw new IOException(errorMessage(r));
+        return "true".equalsIgnoreCase(r.body.trim());
+    }
+
     public boolean refreshEntitlement() throws Exception {
         if (auth.clinicId().isEmpty()) return true;
         JSONObject body = new JSONObject();

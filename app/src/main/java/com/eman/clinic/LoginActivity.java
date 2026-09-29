@@ -58,7 +58,7 @@ public class LoginActivity extends Activity {
         modes.setOrientation(LinearLayout.HORIZONTAL);
         modeLogin = modeButton("دخول", MODE_LOGIN);
         modeOwner = modeButton("عيادة جديدة", MODE_OWNER);
-        modeJoin = modeButton("رمز دعوة", MODE_JOIN);
+        modeJoin = modeButton("حساب موظف", MODE_JOIN);
         modes.addView(modeLogin, modeParams(true));
         modes.addView(modeOwner, modeParams(false));
         modes.addView(modeJoin, modeParams(false));
@@ -141,9 +141,9 @@ public class LoginActivity extends Activity {
             primaryAction.setText("إنشاء حساب وعيادة جديدة");
             secondaryAction.setText("الحساب موجود — إكمال إنشاء العيادة");
         } else {
-            helper.setText("للمسجلة أو الدكتور البديل: استخدمي رمز الدعوة الصادر من الدكتور المالك.");
-            primaryAction.setText("إنشاء حساب والانضمام للعيادة");
-            secondaryAction.setText("الحساب موجود — ربطه برمز الدعوة");
+            helper.setText("للمسجلة أو الدكتور البديل: التسجيل عادي، ورمز الدكتور مطلوب عند ربط الحساب أول مرة فقط. بعد ذلك يكون الدخول بالبريد وكلمة المرور بدون رمز.");
+            primaryAction.setText("إنشاء الحساب وربطه أول مرة");
+            secondaryAction.setText("الحساب موجود — ربطه أول مرة");
         }
         styleModes();
     }
@@ -240,7 +240,7 @@ public class LoginActivity extends Activity {
                 } else {
                     runOnUiThread(() -> {
                         setBusy(false, "");
-                        showStatus("تم إنشاء الحساب. أكدي البريد، وبعدها ارجعي لقسم «رمز دعوة» واضغطي ربط الحساب بالرمز.", true, false);
+                        showStatus("تم إنشاء الحساب. أكدي البريد، وبعدها ارجعي لقسم «حساب موظف» واستخدمي الرمز لربطه أول مرة فقط.", true, false);
                     });
                 }
             } catch (Exception ex) { fail(ex); }

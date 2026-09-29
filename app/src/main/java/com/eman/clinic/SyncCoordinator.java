@@ -59,6 +59,7 @@ public final class SyncCoordinator {
             boolean activeMembership = api.resolveMembership();
             if (!activeMembership) {
                 auth.markMembershipInactive();
+                ClinicApp.showMembershipBlocked();
                 return true;
             }
 

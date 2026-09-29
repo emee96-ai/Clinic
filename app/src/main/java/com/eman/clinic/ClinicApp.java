@@ -32,6 +32,19 @@ public class ClinicApp extends Application implements Application.ActivityLifecy
         });
     }
 
+    public static void showMembershipBlocked() {
+        Activity activity = currentActivity.get();
+        if (activity == null || activity.isFinishing() || activity instanceof LoginActivity) return;
+        activity.runOnUiThread(() -> {
+            if (activity.isFinishing()) return;
+            Toast.makeText(activity, "تم إيقاف أو إزالة حسابك من العيادة", Toast.LENGTH_LONG).show();
+            Intent intent = new Intent(activity, LoginActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            activity.startActivity(intent);
+            activity.finish();
+        });
+    }
+
     public static void showSyncConflict(int count) {
         Activity activity = currentActivity.get();
         if (activity == null || activity.isFinishing() || count <= 0) return;
