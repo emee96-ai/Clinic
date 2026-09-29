@@ -21,8 +21,8 @@ android {
         applicationId = "com.eman.clinic"
         minSdk = 24
         targetSdk = 35
-        versionCode = 34
-        versionName = "1.23.0"
+        versionCode = 35
+        versionName = "1.24.0"
     }
 
     buildFeatures {

@@ -1,6 +1,7 @@
 package com.eman.clinic;
 
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
@@ -8,6 +9,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
@@ -21,6 +23,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.ArrayAdapter;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -143,6 +146,10 @@ public class MainActivity extends ComponentActivity {
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView menu = headerIcon(R.drawable.ic_menu, "فتح القائمة الجانبية");
+        menu.setOnClickListener(v -> showSideMenu());
+        top.addView(menu, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        top.addView(space(8), new LinearLayout.LayoutParams(dp(8), 1));
         TextView brand = tv(prefs.getString("clinic_name", "العيادة"), 21, ink, true);
         top.addView(brand, new LinearLayout.LayoutParams(0, dp(42), 1));
         TextView roleChip = chip(roleLabel(role), primary, Color.WHITE);
@@ -174,40 +181,143 @@ public class MainActivity extends ComponentActivity {
         scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        root.addView(bottomNav(selectedNav), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(68)));
+        root.addView(bottomNav(selectedNav), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(78)));
         setContentView(root);
     }
 
     private LinearLayout bottomNav(int selected) {
         LinearLayout bar = new LinearLayout(this);
         bar.setGravity(Gravity.CENTER);
-        bar.setPadding(dp(6), dp(4), dp(6), dp(7));
+        bar.setPadding(dp(4), dp(5), dp(4), dp(7));
         bar.setBackgroundColor(surface);
-        bar.addView(navItem("الرئيسية", selected == NAV_HOME, v -> showHome()), navParams());
+        bar.setElevation(dp(9));
+        bar.addView(navItem(R.drawable.ic_nav_home,"الرئيسية", selected == NAV_HOME, v -> showHome()), navParams());
         if(ClinicAccessPolicy.canOpenQueue(auth.can("manage_queue"),auth.can("view_clinical"),auth.can("register_visits")))
-            bar.addView(navItem("الطابور", selected == NAV_QUEUE, v -> showQueue()), navParams());
+            bar.addView(navItem(R.drawable.ic_nav_queue,"الطابور", selected == NAV_QUEUE, v -> showQueue()), navParams());
         if(ClinicAccessPolicy.canOpenPatients(auth.can("view_patients")))
-            bar.addView(navItem("المرضى", selected == NAV_PATIENTS, v -> showPatients("")), navParams());
+            bar.addView(navItem(R.drawable.ic_nav_patients,"المرضى", selected == NAV_PATIENTS, v -> showPatients("")), navParams());
         if (ROLE_DOCTOR.equals(role) && ClinicAccessPolicy.canOpenDoctor(auth.can("view_clinical")) && !isOwnerDoctor())
-            bar.addView(navItem("الطبيب", currentScreen==SCREEN_DOCTOR||currentScreen==SCREEN_DOCTOR_VISIT, v -> showDoctor()), navParams());
+            bar.addView(navItem(R.drawable.ic_nav_doctor,"الطبيب", currentScreen==SCREEN_DOCTOR||currentScreen==SCREEN_DOCTOR_VISIT, v -> showDoctor()), navParams());
         else if(ClinicAccessPolicy.canOpenFinance(auth.can("view_finance"),auth.can("record_payments"),auth.can("close_day")))
-            bar.addView(navItem(auth.can("view_finance") ? "الحسابات" : "التحصيل", selected == NAV_FINANCE, v -> showFinance()), navParams());
+            bar.addView(navItem(R.drawable.ic_nav_finance,auth.can("view_finance") ? "المالية" : "التحصيل", selected == NAV_FINANCE, v -> showFinance()), navParams());
+        if (auth.can("manage_staff"))
+            bar.addView(navItem(R.drawable.ic_nav_roles,"الحسابات\nوالأدوار", false, v -> startActivity(new Intent(this, StaffActivity.class))), navParams());
         return bar;
     }
 
     private LinearLayout.LayoutParams navParams() { return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1); }
 
-    private TextView navItem(String label, boolean selected, View.OnClickListener listener) {
-        TextView t = tv(label, 13, selected ? primary : muted, selected);
-        t.setGravity(Gravity.CENTER);
-        t.setBackground(round(selected ? Color.rgb(232, 246, 244) : Color.TRANSPARENT, 14));
-        t.setOnClickListener(listener);
-        t.setContentDescription(label+(selected?"، الصفحة الحالية":""));
-        t.setFocusable(true);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1);
-        p.setMargins(dp(3), dp(4), dp(3), dp(4));
-        t.setLayoutParams(p);
-        return t;
+    private LinearLayout navItem(int iconRes, String label, boolean selected, View.OnClickListener listener) {
+        LinearLayout item = new LinearLayout(this);
+        item.setOrientation(LinearLayout.VERTICAL);
+        item.setGravity(Gravity.CENTER);
+        item.setPadding(dp(2), dp(5), dp(2), dp(3));
+        item.setBackground(round(selected ? Color.rgb(232, 246, 244) : Color.TRANSPARENT, 15));
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setColorFilter(selected ? primary : muted);
+        item.addView(icon, new LinearLayout.LayoutParams(dp(24), dp(24)));
+        TextView text = tv(label, label.contains("\n") ? 10 : 11, selected ? primary : muted, selected);
+        text.setGravity(Gravity.CENTER);
+        text.setMaxLines(2);
+        item.addView(text, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        item.setOnClickListener(listener);
+        item.setContentDescription(label.replace("\n", " ")+(selected?"، الصفحة الحالية":""));
+        item.setFocusable(true);
+        return item;
+    }
+
+    private ImageView headerIcon(int iconRes, String description) {
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setColorFilter(primaryDark);
+        icon.setPadding(dp(10), dp(10), dp(10), dp(10));
+        icon.setBackground(round(Color.rgb(235, 242, 242), 14));
+        icon.setContentDescription(description);
+        icon.setFocusable(true);
+        return icon;
+    }
+
+    private void showSideMenu() {
+        Dialog drawer = new Dialog(this);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(20), dp(24), dp(20), dp(20));
+        panel.setBackgroundColor(surface);
+        panel.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+
+        LinearLayout identity = new LinearLayout(this);
+        identity.setOrientation(LinearLayout.VERTICAL);
+        identity.setPadding(dp(15), dp(15), dp(15), dp(15));
+        identity.setBackground(round(Color.rgb(232, 246, 244), 18));
+        String memberName = auth.memberDisplayName().isEmpty() ? roleLabel(role) : auth.memberDisplayName();
+        identity.addView(tv(memberName, 18, ink, true));
+        identity.addView(tv(prefs.getString("clinic_name", "العيادة")+" • "+roleLabel(role), 13, muted, false));
+        panel.addView(identity);
+        panel.addView(space(14));
+
+        panel.addView(drawerItem(R.drawable.ic_nav_home,"الرئيسية","لوحة اليوم", v -> { drawer.dismiss(); showHome(); }));
+        if (auth.can("manage_staff"))
+            panel.addView(drawerItem(R.drawable.ic_nav_roles,"الحسابات والأدوار","المسجلات والدكتور البديل والصلاحيات", v -> { drawer.dismiss(); startActivity(new Intent(this, StaffActivity.class)); }));
+        panel.addView(drawerItem(R.drawable.ic_settings,"إعدادات العيادة","الرسوم ومدة المقابلة والأدوات", v -> { drawer.dismiss(); showSettings(); }));
+        if (auth.hasRemoteIdentity())
+            panel.addView(drawerItem(R.drawable.ic_sync,"المزامنة والأجهزة",LocalSyncManager.status(this), v -> { drawer.dismiss(); startActivity(new Intent(this, LocalSyncActivity.class)); }));
+        if (isOwnerDoctor()) {
+            panel.addView(drawerItem(R.drawable.ic_backup,"النسخ الاحتياطي","إنشاء أو استرجاع نسخة مشفّرة", v -> { drawer.dismiss(); startActivity(new Intent(this, BackupActivity.class)); }));
+            panel.addView(drawerItem(R.drawable.ic_subscription,"الاشتراك والدفع","حالة الاشتراك وإثبات الدفع", v -> { drawer.dismiss(); startActivity(new Intent(this, BillingActivity.class)); }));
+        }
+        View filler = new View(this);
+        panel.addView(filler, new LinearLayout.LayoutParams(1, 0, 1));
+        panel.addView(drawerItem(R.drawable.ic_logout,"تسجيل الخروج","الخروج من الحساب الحالي", v -> { drawer.dismiss(); confirmLogout(); }));
+
+        drawer.setContentView(panel);
+        Window w = drawer.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setGravity(Gravity.RIGHT);
+            w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            android.view.WindowManager.LayoutParams attrs = w.getAttributes();
+            attrs.dimAmount = 0.42f;
+            w.setAttributes(attrs);
+        }
+        drawer.show();
+        if (w != null) w.setLayout((int)(getResources().getDisplayMetrics().widthPixels * 0.88f), ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+
+    private LinearLayout drawerItem(int iconRes, String title, String subtitle, View.OnClickListener click) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(10), dp(10), dp(10));
+        row.setBackground(strokeBg(surface, line, 14));
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconRes);
+        icon.setColorFilter(primary);
+        row.addView(icon, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.setPadding(dp(12), 0, dp(12), 0);
+        texts.addView(tv(title, 15, ink, true));
+        texts.addView(tv(subtitle, 11, muted, false));
+        row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.setOnClickListener(click);
+        row.setContentDescription(title+"، "+subtitle);
+        row.setFocusable(true);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.setMargins(0, 0, 0, dp(8));
+        row.setLayoutParams(p);
+        return row;
+    }
+
+    private void confirmLogout() {
+        new AlertDialog.Builder(this)
+                .setTitle("تسجيل الخروج؟")
+                .setMessage("ستظل بيانات العيادة مشفّرة على هذا الجهاز، ولن تظهر إلا بعد الدخول لنفس العيادة.")
+                .setNegativeButton("رجوع", null)
+                .setPositiveButton("خروج", (d, w) -> {
+                    auth.clearRemoteSession();
+                    startActivity(new Intent(this, LoginActivity.class));
+                    finish();
+                }).show();
     }
 
     private void showHome() {
@@ -815,15 +925,7 @@ public class MainActivity extends ComponentActivity {
         }
 
         content.addView(space(10));
-        content.addView(secondaryButton("تسجيل الخروج من الحساب", v -> new AlertDialog.Builder(this)
-                .setTitle("تسجيل الخروج؟")
-                .setMessage("ستظل بيانات العيادة مشفّرة على هذا الجهاز، ولن تظهر إلا بعد الدخول لنفس العيادة.")
-                .setNegativeButton("رجوع", null)
-                .setPositiveButton("خروج", (d, w) -> {
-                    auth.clearRemoteSession();
-                    startActivity(new Intent(this, LoginActivity.class));
-                    finish();
-                }).show()));
+        content.addView(secondaryButton("تسجيل الخروج من الحساب", v -> confirmLogout()));
 
         content.addView(space(20));
         LinearLayout info = card();
