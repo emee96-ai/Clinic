@@ -141,7 +141,7 @@ public class LoginActivity extends Activity {
             primaryAction.setText("إنشاء حساب وعيادة جديدة");
             secondaryAction.setText("الحساب موجود — إكمال إنشاء العيادة");
         } else {
-            helper.setText("للمسجلة أو الدكتور البديل: التسجيل عادي، ورمز الدكتور مطلوب عند ربط الحساب أول مرة فقط. بعد ذلك يكون الدخول بالبريد وكلمة المرور بدون رمز.");
+            helper.setText("المسجلة تُنشئ حسابها وتدخل مباشرة بدون تأكيد البريد. رمز الدكتور مطلوب للربط أول مرة فقط، وبعدها الدخول بالبريد وكلمة المرور.");
             primaryAction.setText("إنشاء الحساب وربطه أول مرة");
             secondaryAction.setText("الحساب موجود — ربطه أول مرة");
         }
@@ -229,19 +229,22 @@ public class LoginActivity extends Activity {
         if (!valid(e, p)) return;
         if (name.length() < 2) { displayName.setError("اكتبي اسمك"); return; }
         if (code.length() < 8) { inviteCode.setError("اكتبي رمز الدعوة"); return; }
-        setBusy(true, "جاري إنشاء الحساب…");
+        setBusy(true, "جاري إنشاء الحساب وربطه…");
         executor.execute(() -> {
             try {
                 SupabaseApi api = new SupabaseApi(this);
-                boolean session = api.signUp(e, p);
-                if (session) {
-                    if (!api.acceptInvite(code, name)) throw new Exception("invite_invalid_or_expired");
+                boolean instantReceptionist = api.registerReceptionistInstantly(e, p, code, name);
+                if (instantReceptionist) {
                     success();
                 } else {
-                    runOnUiThread(() -> {
-                        setBusy(false, "");
-                        showStatus("تم إنشاء الحساب. أكدي البريد، وبعدها ارجعي لقسم «حساب موظف» واستخدمي الرمز لربطه أول مرة فقط.", true, false);
-                    });
+                    boolean session = api.signUp(e, p);
+                    if (session) {
+                        if (!api.acceptInvite(code, name)) throw new Exception("invite_invalid_or_expired");
+                        success();
+                    } else runOnUiThread(() -> {
+                            setBusy(false, "");
+                            showStatus("حساب الدكتور البديل يحتاج تأكيد البريد، وبعدها ارجعي لقسم «حساب موظف» لربطه أول مرة.", true, false);
+                        });
                 }
             } catch (Exception ex) { fail(ex); }
         });
@@ -314,6 +317,9 @@ public class LoginActivity extends Activity {
         if (m.contains("Email not confirmed")) return "أكدي البريد الإلكتروني أولاً ثم حاولي مرة تانية";
         if (m.contains("invite_invalid_or_expired") || m.contains("invalid_invite")) return "رمز الدعوة غير صحيح أو انتهت صلاحيته أو استُخدم بالكامل";
         if (m.contains("already registered") || m.contains("User already registered") || m.contains("duplicate")) return "الحساب موجود مسبقاً؛ استخدمي زر ربط الحساب الموجود";
+        if (m.contains("account_exists")) return "الحساب موجود مسبقاً؛ استخدمي زر «الحساب موجود — ربطه أول مرة»";
+        if (m.contains("account_create_failed")) return "تعذر إنشاء الحساب. راجعي البريد وكلمة المرور وحاولي تاني.";
+        if (m.contains("membership_create_failed")) return "تم إنشاء الحساب لكن تعذر ربطه بالعيادة. حاولي مرة تانية أو اطلبي رمزاً جديداً.";
         if (m.contains("account_not_linked")) return "الحساب صحيح لكنه غير مربوط بعيادة. اختاري «عيادة جديدة» أو «رمز دعوة» حسب حسابك.";
         if (m.contains("account_already_linked")) return "الحساب مربوط بعيادة أخرى بالفعل؛ استخدمي حساباً مختلفاً أو راجعي مالك العيادة.";
         if (m.contains("clinic_create_failed")) return "تعذر إنشاء العيادة. تأكدي إن الحساب ما مربوط بعيادة أخرى.";

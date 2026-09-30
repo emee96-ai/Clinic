@@ -59,6 +59,21 @@ public final class SupabaseApi {
         return false;
     }
 
+    /** Creates and links a receptionist with a valid one-time invite, already email-confirmed. */
+    public boolean registerReceptionistInstantly(String email, String password, String code, String displayName) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("email", email == null ? "" : email.trim());
+        body.put("password", password == null ? "" : password);
+        body.put("code", code == null ? "" : code.trim());
+        body.put("display_name", displayName == null ? "" : displayName.trim());
+        Response r = raw("POST", "/functions/v1/register-receptionist", body.toString(), false, null);
+        if (r.code == 422 && r.body.contains("role_requires_email_confirmation")) return false;
+        if (!ok(r)) throw new IOException(errorMessage(r));
+        signIn(email, password);
+        if (!resolveMembership()) throw new IOException("membership_create_failed");
+        return true;
+    }
+
     public boolean refreshSession() {
         try {
             String refresh = auth.refreshToken();
@@ -445,6 +460,7 @@ public final class SupabaseApi {
         try {
             JSONObject j = new JSONObject(r.body);
             String m = j.optString("message", "");
+            if (m.isEmpty()) m = j.optString("error", "");
             if (m.isEmpty()) m = j.optString("msg", "");
             if (m.isEmpty()) m = j.optString("error_description", "");
             if (m.isEmpty()) m = j.optString("details", "");
