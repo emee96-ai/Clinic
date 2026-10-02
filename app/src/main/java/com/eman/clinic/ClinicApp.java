@@ -9,6 +9,8 @@ import android.os.Looper;
 import android.widget.Toast;
 
 import java.lang.ref.WeakReference;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ClinicApp extends Application implements Application.ActivityLifecycleCallbacks {
     private static final WeakReference<Activity> EMPTY_ACTIVITY = new WeakReference<>(null);
@@ -17,6 +19,7 @@ public class ClinicApp extends Application implements Application.ActivityLifecy
     private static final long IDLE_PULL_MS = 30000L;
 
     private Handler syncHandler;
+    private final ExecutorService syncExecutor = Executors.newSingleThreadExecutor();
     private long lastIdlePullMs;
 
     private final Runnable foregroundSyncPulse = new Runnable() {
@@ -24,19 +27,22 @@ public class ClinicApp extends Application implements Application.ActivityLifecy
             try {
                 Activity activity = currentActivity.get();
                 if (activity != null && !activity.isFinishing()) {
-                    AuthStore auth = new AuthStore(ClinicApp.this);
-                    if (auth.hasRemoteIdentity() && auth.isMembershipActive()) {
-                        SyncStore store = new SyncStore(ClinicApp.this);
-                        boolean pending = store.pendingCount() > 0;
-                        long now = System.currentTimeMillis();
-                        if (pending || now - lastIdlePullMs >= IDLE_PULL_MS) {
-                            SyncCoordinator.kick(ClinicApp.this);
-                            if (!pending) lastIdlePullMs = now;
+                    syncExecutor.execute(() -> {
+                        try {
+                            AuthStore auth = new AuthStore(ClinicApp.this);
+                            if (!auth.hasRemoteIdentity() || !auth.isMembershipActive()) return;
+                            SyncStore store = new SyncStore(ClinicApp.this);
+                            boolean pending = store.pendingCount() > 0;
+                            long now = System.currentTimeMillis();
+                            if (pending || now - lastIdlePullMs >= IDLE_PULL_MS) {
+                                SyncCoordinator.kick(ClinicApp.this);
+                                if (!pending) lastIdlePullMs = now;
+                            }
+                        } catch (Exception ignored) {
+                            // The clinic remains fully usable even if background sync cannot run.
                         }
-                    }
+                    });
                 }
-            } catch (Exception ignored) {
-                // The clinic remains fully usable even if background sync cannot run.
             } finally {
                 if (syncHandler != null) syncHandler.postDelayed(this, ACTIVE_SYNC_CHECK_MS);
             }
