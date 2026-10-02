@@ -24,6 +24,7 @@ public final class SyncCoordinator {
 
     public static void start(Context context) {
         Context app = context.getApplicationContext();
+        SyncBootstrap.install(app);
         Constraints connected = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresBatteryNotLow(true)
@@ -39,13 +40,20 @@ public final class SyncCoordinator {
     }
 
     public static void kick(Context context) {
+        Context app = context.getApplicationContext();
+        // The active clinic can become known only after login/invite resolution. Re-installing
+        // here guarantees change-tracking triggers are attached to the clinic-scoped database,
+        // and seeds any rows created before the clinic identity was available.
+        SyncBootstrap.install(app);
+        LocalSyncManager.kick(app);
+
         Constraints connected = new Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED).build();
         OneTimeWorkRequest work = new OneTimeWorkRequest.Builder(ClinicSyncWorker.class)
                 .setConstraints(connected)
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build();
-        WorkManager.getInstance(context.getApplicationContext())
+        WorkManager.getInstance(app)
                 .enqueueUniqueWork(IMMEDIATE, ExistingWorkPolicy.KEEP, work);
     }
 
